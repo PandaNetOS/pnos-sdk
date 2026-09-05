@@ -1,0 +1,18 @@
+[package]
+name = "pnos-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "PandaNetOS 应用开发 SDK - 自动注册、服务发现、统一调用、健康检查"
+license = "MIT"
+repository = "https://github.com/PandaNetOS/pnos-sdk"
+
+[dependencies]
+pnos = { git = "https://github.com/PandaNetOS/pnos-spec.git", branch = "main" }
+
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+thiserror = "1"
+anyhow = "1"
