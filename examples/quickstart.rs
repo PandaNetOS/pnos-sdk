@@ -30,9 +30,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .route(
             "/api/v1/echo/:msg",
-            get(|axum::extract::Path(msg): axum::extract::Path<String>| async move {
-                Json(json!({ "echo": msg }))
-            }),
+            get(
+                |axum::extract::Path(msg): axum::extract::Path<String>| async move {
+                    Json(json!({ "echo": msg }))
+                },
+            ),
         )
         // 事件订阅（SDK 自动连接 WS + 自动重连）
         .on_event("app.status_changed", |evt| async move {

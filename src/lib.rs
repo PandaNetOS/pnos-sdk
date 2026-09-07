@@ -1,6 +1,7 @@
-//! PandaNetOS 统一通信 SDK
+//! PandaNetOS 统一通信 SDK（v1.0）
 //!
 //! 引入后零通信代码：自动注册、心跳、注销、服务发现、认证、事件订阅、健康检查。
+//! 应用与 Agent 共用同一套 API，通过 component_type 区分。
 //!
 //! # 快速开始（零通信代码）
 //!
@@ -12,12 +13,12 @@
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     PnosApp::builder("my-app")
-//!         .version("0.1.0")
+//!         .version("1.0.0")
 //!         .port(18090)
 //!         // 只写业务路由
 //!         .route("/api/v1/hello", get(|| async { Json(json!({"msg": "hi"})) }))
 //!         // 可选：事件回调
-//!         .on_event("app.status_changed", |evt| async move {
+//!         .on_event("component.status_changed", |evt| async move {
 //!             println!("状态变更: {:?}", evt.payload);
 //!         })
 //!         // 一键启动：注册+心跳+服务器+认证+健康检查+WS+注销 全自动
@@ -26,21 +27,21 @@
 //! }
 //! ```
 //!
-//! # 高级用法（嵌入自己的服务器）
+//! # Agent 模式
 //!
 //! ```rust,no_run
 //! use pnos_sdk::PnosApp;
+//! use pnos::component::ComponentType;
 //!
 //! # async fn example() -> anyhow::Result<()> {
-//! let app = PnosApp::builder("my-app")
-//!     .version("0.1.0")
-//!     .init()
-//!     .await?;
-//!
-//! // 拿到 Router 自己组装
-//! let router = app.into_router();
-//! // ... 自行启动服务器
-//! # Ok(())
+//! PnosApp::builder("spde-001")
+//!     .version("0.6.2")
+//!     .port(9000)
+//!     .component_type(ComponentType::Agent)
+//!     .capability("download.http")
+//!     .capability("download.bt")
+//!     .run()
+//!     .await
 //! # }
 //! ```
 
@@ -58,7 +59,7 @@ pub mod server;
 pub mod ws;
 
 // ---- 最常用类型 re-export ----
-pub use client::AppClient;
+pub use client::ComponentClient;
 pub use config::SdkConfig;
 pub use error::{Result, SdkError};
 pub use events::EventDispatcher;
@@ -68,24 +69,30 @@ pub use registry::RuntimeClient;
 pub use server::AppServer;
 pub use ws::WsClient;
 
+// 向后兼容别名
+#[allow(dead_code)]
+pub type AppClient = ComponentClient;
+
 use std::sync::Arc;
 
 use axum::routing::MethodRouter;
-use pnos::app::AppStatus;
-use pnos::registry::AppRegisterRequest;
+use pnos::component::{ComponentStatus, ComponentType};
+use pnos::registry::ComponentRegisterRequest;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::discovery::DiscoveryCache;
 use crate::events::EventHandler;
 
-/// Pnos 应用主入口（所有组件的组合体）
+/// Pnos 组件主入口（所有组件的组合体，应用与 Agent 共用）
 #[derive(Clone)]
 pub struct PnosApp {
-    /// 应用 ID
+    /// 组件 ID
     pub app_id: String,
-    /// 应用版本
+    /// 组件版本
     pub version: String,
+    /// 组件类型
+    pub component_type: ComponentType,
     /// 配置
     pub config: Arc<SdkConfig>,
     /// runtime API 客户端
@@ -112,14 +119,14 @@ impl PnosApp {
         PnosAppBuilder::new(app_id)
     }
 
-    /// 调用其他应用（自动发现地址 + 自动带 Token）
-    pub fn call(&self, app_id: &str) -> AppClient {
-        AppClient::new(
+    /// 调用其他组件（自动发现地址 + 自动带 Token）
+    pub fn call(&self, component_id: &str) -> ComponentClient {
+        ComponentClient::new(
             self.discovery.clone(),
             self.token.clone(),
             self.http.clone(),
             self.config.clone(),
-            app_id,
+            component_id,
         )
     }
 
@@ -128,9 +135,23 @@ impl PnosApp {
         self.token.read().await.clone()
     }
 
-    /// 手动发送心跳
-    pub async fn heartbeat(&self, status: AppStatus) -> crate::error::Result<()> {
-        self.runtime.heartbeat(status, None).await?;
+    /// 手动发送心跳（应用场景）
+    pub async fn heartbeat(&self, status: ComponentStatus) -> crate::error::Result<()> {
+        self.runtime.heartbeat(status, 0.0, 0, 0).await?;
+        Ok(())
+    }
+
+    /// 手动发送心跳（Agent 场景，含任务统计）
+    pub async fn heartbeat_agent(
+        &self,
+        status: ComponentStatus,
+        load: f32,
+        active_tasks: u32,
+        bytes_downloaded: u64,
+    ) -> crate::error::Result<()> {
+        self.runtime
+            .heartbeat(status, load, active_tasks, bytes_downloaded)
+            .await?;
         Ok(())
     }
 
@@ -154,15 +175,23 @@ impl PnosApp {
 // 构建器
 // ---------------------------------------------------------------------------
 
-/// Pnos 应用构建器
+/// Pnos 组件构建器
 pub struct PnosAppBuilder {
     app_id: String,
     version: String,
+    component_type: ComponentType,
     port: u16,
     runtime_url: Option<String>,
     health_check_path: String,
     web_path: Option<String>,
     dependencies: Vec<String>,
+    capabilities: Vec<String>,
+    region: Option<String>,
+    hostname: Option<String>,
+    platform: Option<String>,
+    arch: Option<String>,
+    max_concurrent: Option<u32>,
+    max_bandwidth_bps: Option<u64>,
     auto_heartbeat: bool,
     /// 收集的业务路由
     routes: Vec<(String, MethodRouter)>,
@@ -174,12 +203,20 @@ impl PnosAppBuilder {
     fn new(app_id: impl Into<String>) -> Self {
         Self {
             app_id: app_id.into(),
-            version: "0.1.0".to_string(),
+            version: "1.0.0".to_string(),
+            component_type: ComponentType::App,
             port: 18080,
             runtime_url: None,
             health_check_path: "/health".to_string(),
             web_path: Some("/".to_string()),
             dependencies: Vec::new(),
+            capabilities: Vec::new(),
+            region: None,
+            hostname: None,
+            platform: None,
+            arch: None,
+            max_concurrent: None,
+            max_bandwidth_bps: None,
             auto_heartbeat: true,
             routes: Vec::new(),
             event_handlers: Vec::new(),
@@ -189,6 +226,12 @@ impl PnosAppBuilder {
     /// 设置版本
     pub fn version(mut self, v: impl Into<String>) -> Self {
         self.version = v.into();
+        self
+    }
+
+    /// 设置组件类型（应用/Agent/运行时/主控）
+    pub fn component_type(mut self, component_type: ComponentType) -> Self {
+        self.component_type = component_type;
         self
     }
 
@@ -222,6 +265,38 @@ impl PnosAppBuilder {
         self
     }
 
+    /// 添加能力标签（Agent 用）
+    pub fn capability(mut self, capability: impl Into<String>) -> Self {
+        self.capabilities.push(capability.into());
+        self
+    }
+
+    /// 设置区域标识
+    pub fn region(mut self, region: impl Into<String>) -> Self {
+        self.region = Some(region.into());
+        self
+    }
+
+    /// 设置 Agent 主机信息
+    pub fn host_info(
+        mut self,
+        hostname: impl Into<String>,
+        platform: impl Into<String>,
+        arch: impl Into<String>,
+    ) -> Self {
+        self.hostname = Some(hostname.into());
+        self.platform = Some(platform.into());
+        self.arch = Some(arch.into());
+        self
+    }
+
+    /// 设置最大并发与带宽（Agent 用）
+    pub fn limits(mut self, max_concurrent: u32, max_bandwidth_bps: u64) -> Self {
+        self.max_concurrent = Some(max_concurrent);
+        self.max_bandwidth_bps = Some(max_bandwidth_bps);
+        self
+    }
+
     /// 禁用自动心跳
     pub fn no_auto_heartbeat(mut self) -> Self {
         self.auto_heartbeat = false;
@@ -234,7 +309,7 @@ impl PnosAppBuilder {
         self
     }
 
-    /// 注册事件回调（支持前缀匹配，如 "app.*"）
+    /// 注册事件回调（支持前缀匹配，如 "task.*" / "component.*"）
     pub fn on_event<F, Fut>(mut self, pattern: impl Into<String>, handler: F) -> Self
     where
         F: Fn(pnos::events::WsMessage) -> Fut + Send + Sync + 'static,
@@ -245,7 +320,7 @@ impl PnosAppBuilder {
         self
     }
 
-    /// 初始化应用（注册 + 心跳 + WS + 事件分发，不启动服务器）
+    /// 初始化组件（注册 + 心跳 + WS + 事件分发，不启动服务器）
     ///
     /// 高级用户用此方法获取 [`PnosApp`] 后自行组装服务器。
     pub async fn init(self) -> crate::error::Result<PnosApp> {
@@ -295,12 +370,23 @@ impl PnosAppBuilder {
             server = server.route(&path, method_router);
         }
 
-        // 11. 注册到 runtime
-        let register_req = AppRegisterRequest {
+        // 11. 注册到 runtime（统一组件注册请求）
+        let register_req = ComponentRegisterRequest {
             id: self.app_id.clone(),
             name: self.app_id.clone(),
             version: self.version.clone(),
+            component_type: self.component_type,
             port: self.port,
+            serve_host: None,
+            serve_port: None,
+            capabilities: self.capabilities.clone(),
+            region: self.region.clone(),
+            hostname: self.hostname.clone(),
+            platform: self.platform.clone(),
+            arch: self.arch.clone(),
+            labels: Vec::new(),
+            max_concurrent: self.max_concurrent,
+            max_bandwidth_bps: self.max_bandwidth_bps,
             health_check_path: self.health_check_path.clone(),
             web_path: self.web_path.clone(),
             dependencies: self.dependencies.clone(),
@@ -308,8 +394,9 @@ impl PnosAppBuilder {
 
         let register_resp = runtime.register(&register_req).await?;
         info!(
-            "应用注册成功: {} (port={}, token={}...)",
+            "组件注册成功: {} (type={}, port={}, token={}...)",
             self.app_id,
+            self.component_type,
             self.port,
             &register_resp.token[..register_resp.token.len().min(8)]
         );
@@ -322,7 +409,10 @@ impl PnosAppBuilder {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(interval).await;
-                    if let Err(e) = runtime_clone.heartbeat(AppStatus::Running, None).await {
+                    if let Err(e) = runtime_clone
+                        .heartbeat(ComponentStatus::Running, 0.0, 0, 0)
+                        .await
+                    {
                         warn!("心跳异常: {}", e);
                     }
                 }
@@ -353,12 +443,12 @@ impl PnosAppBuilder {
             let runtime = runtime_clone.clone();
             let ws = ws_clone.clone();
             async move {
-                info!("正在注销应用...");
+                info!("正在注销组件...");
                 ws.shutdown();
                 if let Err(e) = runtime.unregister().await {
                     error!("注销失败: {}", e);
                 } else {
-                    info!("应用已注销");
+                    info!("组件已注销");
                 }
             }
         });
@@ -366,6 +456,7 @@ impl PnosAppBuilder {
         Ok(PnosApp {
             app_id: self.app_id,
             version: self.version,
+            component_type: self.component_type,
             config,
             runtime,
             discovery,
@@ -401,7 +492,7 @@ impl PnosAppBuilder {
         // 等待服务器退出
         let _ = server_handle.await;
 
-        info!("应用已完全关闭");
+        info!("组件已完全关闭");
         Ok(())
     }
 }

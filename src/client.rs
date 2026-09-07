@@ -1,6 +1,6 @@
-//! 应用间调用客户端
+//! 组件间调用客户端
 //!
-//! 自动通过服务发现（带缓存）获取目标应用地址，自动注入认证 Token，
+//! 自动通过服务发现（带缓存）获取目标组件地址，自动注入认证 Token，
 //! 失败自动重试。支持直连模式和 runtime 反向代理模式。
 
 use std::sync::Arc;
@@ -17,37 +17,41 @@ use crate::discovery::DiscoveryCache;
 use crate::error::{Result, SdkError};
 use pnos::response::ApiResponse;
 
-/// 针对单个应用的调用客户端
+/// 针对单个组件的调用客户端
 #[derive(Clone)]
-pub struct AppClient {
+pub struct ComponentClient {
     discovery: DiscoveryCache,
     token: Arc<RwLock<Option<String>>>,
     http: reqwest::Client,
     config: Arc<SdkConfig>,
-    target_app_id: String,
+    target_component_id: String,
     /// 是否通过 runtime 反向代理调用（默认 false，直连）
     use_proxy: bool,
 }
 
-impl AppClient {
+// 向后兼容别名
+#[allow(dead_code)]
+pub type AppClient = ComponentClient;
+
+impl ComponentClient {
     pub(crate) fn new(
         discovery: DiscoveryCache,
         token: Arc<RwLock<Option<String>>>,
         http: reqwest::Client,
         config: Arc<SdkConfig>,
-        target_app_id: &str,
+        target_component_id: &str,
     ) -> Self {
         Self {
             discovery,
             token,
             http,
             config,
-            target_app_id: target_app_id.to_string(),
+            target_component_id: target_component_id.to_string(),
             use_proxy: false,
         }
     }
 
-    /// 切换为通过 runtime 反向代理调用（/app/{id}/*）
+    /// 切换为通过 runtime 反向代理调用（/component/{id}/*）
     pub fn via_proxy(mut self) -> Self {
         self.use_proxy = true;
         self
@@ -90,7 +94,7 @@ impl AppClient {
 
 /// 请求构建器
 pub struct RequestBuilder {
-    client: AppClient,
+    client: ComponentClient,
     method: Method,
     path: String,
     body: Option<serde_json::Value>,
@@ -154,7 +158,7 @@ impl RequestBuilder {
                 tokio::time::sleep(backoff).await;
                 debug!(
                     "重试调用 {} {}/{} (第 {} 次)",
-                    self.client.target_app_id, self.method, self.path, attempt
+                    self.client.target_component_id, self.method, self.path, attempt
                 );
             }
 
@@ -162,7 +166,8 @@ impl RequestBuilder {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
                     // 只有网络错误和 5xx 才重试
-                    let retryable = matches!(e, SdkError::Network(_) | SdkError::AppUnreachable(_));
+                    let retryable =
+                        matches!(e, SdkError::Network(_) | SdkError::ComponentUnreachable(_));
                     if !retryable || attempt == max_retries {
                         return Err(e);
                     }
@@ -180,26 +185,26 @@ impl RequestBuilder {
 
         // 1. 确定目标 URL
         let base_url = if self.client.use_proxy {
-            // 代理模式：通过 runtime 的 /app/{id}/* 转发
+            // 代理模式：通过 runtime 的 /component/{id}/* 转发
             format!(
-                "{}/app/{}",
+                "{}/component/{}",
                 self.client.config.runtime_url.trim_end_matches('/'),
-                self.client.target_app_id
+                self.client.target_component_id
             )
         } else {
             // 直连模式：通过服务发现获取地址
             let discovered = self
                 .client
                 .discovery
-                .discover(&self.client.target_app_id)
+                .discover(&self.client.target_component_id)
                 .await?;
-            discovered.base_url
+            discovered.accessible_url().to_string()
         };
 
         let url = format!("{}{}", base_url.trim_end_matches('/'), self.path);
         debug!(
             "调用 {} {} -> {}",
-            self.method, self.client.target_app_id, url
+            self.method, self.client.target_component_id, url
         );
 
         // 2. 构建请求
@@ -221,12 +226,14 @@ impl RequestBuilder {
         let resp = req
             .send()
             .await
-            .map_err(|e| SdkError::AppUnreachable(format!("请求失败: {e}")))?;
+            .map_err(|e| SdkError::ComponentUnreachable(format!("请求失败: {e}")))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(SdkError::AppUnreachable(format!("HTTP {status}: {text}")));
+            return Err(SdkError::ComponentUnreachable(format!(
+                "HTTP {status}: {text}"
+            )));
         }
 
         Ok(resp)

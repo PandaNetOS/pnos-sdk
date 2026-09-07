@@ -1,13 +1,14 @@
-//! pnos-runtime API 客户端封装
+//! pnos-runtime API 客户端封装（统一组件协议）
 //!
-//! 封装 runtime 的全部 REST API：注册、注销、心跳、应用列表/详情/发现、
+//! 封装 runtime 的全部 REST API：注册、注销、心跳、组件列表/详情/发现、
 //! 系统信息/监控/健康检查。所有请求自动带 `X-Pnos-Token`。
 
 use std::sync::Arc;
 
-use pnos::app::AppStatus;
+use pnos::component::{ComponentStatus, ComponentType};
+use pnos::discovery::ComponentDiscoverResponse;
 use pnos::registry::{
-    AppDiscoverResponse, AppInfo, AppRegisterRequest, AppRegisterResponse, HeartbeatRequest,
+    ComponentInfo, ComponentRegisterRequest, ComponentRegisterResponse, HeartbeatRequest,
 };
 use pnos::response::ApiResponse;
 use pnos::system::{SystemInfo, SystemStats};
@@ -48,10 +49,13 @@ impl RuntimeClient {
         *self.token.write().await = Some(token);
     }
 
-    /// 注册应用
-    pub async fn register(&self, req: &AppRegisterRequest) -> Result<AppRegisterResponse> {
-        let url = format!("{}/apps/register", self.config.api_base());
-        debug!("注册应用: {} -> {}", req.id, url);
+    /// 注册组件
+    pub async fn register(
+        &self,
+        req: &ComponentRegisterRequest,
+    ) -> Result<ComponentRegisterResponse> {
+        let url = format!("{}/components/register", self.config.api_base());
+        debug!("注册组件: {} -> {}", req.id, url);
 
         let resp = self
             .http
@@ -65,16 +69,16 @@ impl RuntimeClient {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             return Err(SdkError::new(
-                pnos::error::ErrorCode::AppNotRegistered,
+                pnos::error::ErrorCode::ComponentNotRegistered,
                 format!("HTTP {status}: {text}"),
             ));
         }
 
-        let body: ApiResponse<AppRegisterResponse> = resp.json().await?;
+        let body: ApiResponse<ComponentRegisterResponse> = resp.json().await?;
 
         if body.code != 0 {
             return Err(SdkError::new(
-                pnos::error::ErrorCode::AppNotRegistered,
+                pnos::error::ErrorCode::ComponentNotRegistered,
                 body.message,
             ));
         }
@@ -83,9 +87,9 @@ impl RuntimeClient {
             .ok_or_else(|| SdkError::Other("注册响应 data 为空".to_string()))
     }
 
-    /// 注销应用
+    /// 注销组件
     pub async fn unregister(&self) -> Result<bool> {
-        let url = format!("{}/apps/unregister", self.config.api_base());
+        let url = format!("{}/components/unregister", self.config.api_base());
         let token = self.token().await;
 
         let mut req = self.http.post(&url).json(&serde_json::json!({
@@ -110,15 +114,25 @@ impl RuntimeClient {
         Ok(body.data.unwrap_or(false))
     }
 
-    /// 发送心跳
-    pub async fn heartbeat(&self, status: AppStatus, message: Option<String>) -> Result<bool> {
-        let url = format!("{}/apps/heartbeat", self.config.api_base());
+    /// 发送心跳（统一组件心跳，含状态+负载+任务统计）
+    pub async fn heartbeat(
+        &self,
+        status: ComponentStatus,
+        load: f32,
+        active_tasks: u32,
+        bytes_downloaded: u64,
+    ) -> Result<bool> {
+        let url = format!("{}/components/heartbeat", self.config.api_base());
         let token = self.token().await;
 
         let req_body = HeartbeatRequest {
             id: self.config.app_id.clone(),
             status,
-            message,
+            active_tasks,
+            bytes_downloaded,
+            speed_bps: 0,
+            load,
+            message: None,
         };
 
         let mut req = self.http.post(&url).json(&req_body);
@@ -141,9 +155,9 @@ impl RuntimeClient {
         Ok(body.data.unwrap_or(false))
     }
 
-    /// 列出所有已注册应用
-    pub async fn list_apps(&self) -> Result<Vec<AppInfo>> {
-        let url = format!("{}/apps", self.config.api_base());
+    /// 列出所有已注册组件
+    pub async fn list_components(&self) -> Result<Vec<ComponentInfo>> {
+        let url = format!("{}/components", self.config.api_base());
         let token = self.token().await;
 
         let mut req = self.http.get(&url);
@@ -154,23 +168,23 @@ impl RuntimeClient {
         let resp = req
             .send()
             .await
-            .map_err(|e| SdkError::Network(format!("查询应用列表失败: {e}")))?;
+            .map_err(|e| SdkError::Network(format!("查询组件列表失败: {e}")))?;
 
         if !resp.status().is_success() {
             return Err(SdkError::new(
-                pnos::error::ErrorCode::AppNotFound,
+                pnos::error::ErrorCode::ComponentNotRegistered,
                 format!("HTTP {}", resp.status()),
             ));
         }
 
-        let body: ApiResponse<Vec<AppInfo>> = resp.json().await?;
+        let body: ApiResponse<Vec<ComponentInfo>> = resp.json().await?;
 
         Ok(body.data.unwrap_or_default())
     }
 
-    /// 获取单个应用详情
-    pub async fn app_detail(&self, app_id: &str) -> Result<AppInfo> {
-        let url = format!("{}/apps/{}", self.config.api_base(), app_id);
+    /// 获取单个组件详情
+    pub async fn component_detail(&self, component_id: &str) -> Result<ComponentInfo> {
+        let url = format!("{}/components/{}", self.config.api_base(), component_id);
         let token = self.token().await;
 
         let mut req = self.http.get(&url);
@@ -181,21 +195,25 @@ impl RuntimeClient {
         let resp = req
             .send()
             .await
-            .map_err(|e| SdkError::Network(format!("查询应用详情失败: {e}")))?;
+            .map_err(|e| SdkError::Network(format!("查询组件详情失败: {e}")))?;
 
         if !resp.status().is_success() {
-            return Err(SdkError::AppNotFound(app_id.to_string()));
+            return Err(SdkError::ComponentNotFound(component_id.to_string()));
         }
 
-        let body: ApiResponse<AppInfo> = resp.json().await?;
+        let body: ApiResponse<ComponentInfo> = resp.json().await?;
 
         body.data
-            .ok_or_else(|| SdkError::AppNotFound(app_id.to_string()))
+            .ok_or_else(|| SdkError::ComponentNotFound(component_id.to_string()))
     }
 
-    /// 发现应用地址
-    pub async fn discover(&self, app_id: &str) -> Result<AppDiscoverResponse> {
-        let url = format!("{}/apps/{}/discover", self.config.api_base(), app_id);
+    /// 发现组件地址
+    pub async fn discover(&self, component_id: &str) -> Result<ComponentDiscoverResponse> {
+        let url = format!(
+            "{}/components/{}/discover",
+            self.config.api_base(),
+            component_id
+        );
         let token = self.token().await;
 
         let mut req = self.http.get(&url);
@@ -209,13 +227,22 @@ impl RuntimeClient {
             .map_err(|e| SdkError::Network(format!("服务发现失败: {e}")))?;
 
         if !resp.status().is_success() {
-            return Err(SdkError::AppNotFound(app_id.to_string()));
+            return Err(SdkError::ComponentNotFound(component_id.to_string()));
         }
 
-        let body: ApiResponse<AppDiscoverResponse> = resp.json().await?;
+        let body: ApiResponse<ComponentDiscoverResponse> = resp.json().await?;
 
         body.data
-            .ok_or_else(|| SdkError::AppNotFound(app_id.to_string()))
+            .ok_or_else(|| SdkError::ComponentNotFound(component_id.to_string()))
+    }
+
+    /// 按类型筛选组件
+    pub async fn list_by_type(&self, component_type: ComponentType) -> Result<Vec<ComponentInfo>> {
+        let all = self.list_components().await?;
+        Ok(all
+            .into_iter()
+            .filter(|c| c.component_type == component_type)
+            .collect())
     }
 
     /// 获取系统信息

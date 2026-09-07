@@ -115,8 +115,8 @@ impl Default for EventDispatcher {
 mod tests {
     use super::*;
     use pnos::events::WsMessage;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn make_msg(event_type: &str) -> WsMessage {
         WsMessage::new(event_type, serde_json::json!({}))

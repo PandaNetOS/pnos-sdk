@@ -1,8 +1,8 @@
 [package]
 name = "pnos-sdk"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2021"
-description = "PandaNetOS 统一通信 SDK - 零代码自动注册、心跳、发现、认证、事件、健康检查"
+description = "PandaNetOS 统一通信 SDK - 零代码自动注册、心跳、发现、认证、事件、健康检查（应用与Agent共用）"
 license = "MIT"
 repository = "https://github.com/PandaNetOS/pnos-sdk"
 

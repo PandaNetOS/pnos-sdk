@@ -1,7 +1,7 @@
 //! SDK 统一错误类型
 //!
 //! 包装 [`pnos::error::PnosError`]，额外提供 SDK 层错误
-//! （网络、应用未找到、WebSocket 等），并实现 [`axum::response::IntoResponse`]
+//! （网络、组件未找到、WebSocket 等），并实现 [`axum::response::IntoResponse`]
 //! 让应用端用 `?` 传播后自动序列化为标准 [`pnos::response::ApiResponse`]。
 
 use axum::http::StatusCode;
@@ -21,13 +21,13 @@ pub enum SdkError {
     #[error("网络错误: {0}")]
     Network(String),
 
-    /// 应用未找到
-    #[error("应用未找到: {0}")]
-    AppNotFound(String),
+    /// 组件未找到
+    #[error("组件未找到: {0}")]
+    ComponentNotFound(String),
 
-    /// 应用不可达
-    #[error("应用不可达: {0}")]
-    AppUnreachable(String),
+    /// 组件不可达
+    #[error("组件不可达: {0}")]
+    ComponentUnreachable(String),
 
     /// 认证失败
     #[error("认证失败: {0}")]
@@ -61,8 +61,8 @@ impl SdkError {
         match self {
             SdkError::Business(e) => e.code(),
             SdkError::Network(_) => ErrorCode::NetworkError,
-            SdkError::AppNotFound(_) => ErrorCode::AppNotFound,
-            SdkError::AppUnreachable(_) => ErrorCode::ServiceUnavailable,
+            SdkError::ComponentNotFound(_) => ErrorCode::ComponentNotRegistered,
+            SdkError::ComponentUnreachable(_) => ErrorCode::ServiceUnavailable,
             SdkError::Auth(_) => ErrorCode::Unauthorized,
             SdkError::WebSocket(_) => ErrorCode::InternalError,
             SdkError::Serde(_) => ErrorCode::InternalError,
@@ -77,8 +77,8 @@ impl SdkError {
             SdkError::Business(e) => StatusCode::from_u16(e.code().http_status())
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             SdkError::Network(_) => StatusCode::BAD_GATEWAY,
-            SdkError::AppNotFound(_) => StatusCode::NOT_FOUND,
-            SdkError::AppUnreachable(_) => StatusCode::BAD_GATEWAY,
+            SdkError::ComponentNotFound(_) => StatusCode::NOT_FOUND,
+            SdkError::ComponentUnreachable(_) => StatusCode::BAD_GATEWAY,
             SdkError::Auth(_) => StatusCode::UNAUTHORIZED,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -123,8 +123,8 @@ mod tests {
 
     #[test]
     fn test_error_code_mapping() {
-        let err = SdkError::new(ErrorCode::AppNotFound, "test");
-        assert_eq!(err.code(), ErrorCode::AppNotFound);
+        let err = SdkError::new(ErrorCode::ComponentNotRegistered, "test");
+        assert_eq!(err.code(), ErrorCode::ComponentNotRegistered);
         assert_eq!(err.http_status(), axum::http::StatusCode::NOT_FOUND);
     }
 
@@ -143,8 +143,15 @@ mod tests {
     }
 
     #[test]
+    fn test_component_not_found() {
+        let err = SdkError::ComponentNotFound("spde-001".to_string());
+        assert_eq!(err.code(), ErrorCode::ComponentNotRegistered);
+        assert_eq!(err.http_status(), axum::http::StatusCode::NOT_FOUND);
+        assert!(err.to_string().contains("spde-001"));
+    }
+
+    #[test]
     fn test_from_reqwest_error() {
-        // reqwest::Error 无法直接构造，测试 From<url::ParseError>
         let parse_err = url::Url::parse("not a url").unwrap_err();
         let err: SdkError = parse_err.into();
         assert!(matches!(err, SdkError::Other(_)));
@@ -152,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_into_response() {
-        let err = SdkError::new(ErrorCode::AppNotFound, "not found");
+        let err = SdkError::ComponentNotFound("not found".to_string());
         let resp = err.into_response();
         assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
     }
