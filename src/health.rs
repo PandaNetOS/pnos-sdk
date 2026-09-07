@@ -76,3 +76,45 @@ impl HealthBuilder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_health_all_ok() {
+        let health = HealthBuilder::new("1.0.0")
+            .dependency_ok("pk")
+            .dependency_ok("spde")
+            .build();
+        assert_eq!(health.status, HealthStatus::Ok);
+        assert_eq!(health.version, "1.0.0");
+        assert_eq!(health.dependencies.len(), 2);
+    }
+
+    #[test]
+    fn test_health_degraded() {
+        let health = HealthBuilder::new("1.0.0")
+            .dependency_ok("pk")
+            .dependency_degraded("spde", "队列积压")
+            .build();
+        assert_eq!(health.status, HealthStatus::Degraded);
+    }
+
+    #[test]
+    fn test_health_down() {
+        let health = HealthBuilder::new("1.0.0")
+            .dependency_ok("pk")
+            .dependency_down("spde", "连接失败")
+            .build();
+        assert_eq!(health.status, HealthStatus::Down);
+    }
+
+    #[test]
+    fn test_health_serialization() {
+        let health = HealthBuilder::new("1.0.0").build();
+        let json = serde_json::to_string(&health).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"version\":\"1.0.0\""));
+    }
+}

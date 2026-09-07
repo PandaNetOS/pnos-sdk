@@ -1,27 +1,56 @@
 //! 应用间调用客户端
 //!
-//! 自动通过 pnos-runtime 发现应用地址，自动注入认证 Token。
+//! 自动通过服务发现（带缓存）获取目标应用地址，自动注入认证 Token，
+//! 失败自动重试。支持直连模式和 runtime 反向代理模式。
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use tokio::sync::RwLock;
+use tracing::debug;
 
-use crate::error::{PnosSdkError, Result};
-use crate::PnosApp;
+use crate::config::SdkConfig;
+use crate::discovery::DiscoveryCache;
+use crate::error::{Result, SdkError};
+use pnos::response::ApiResponse;
 
 /// 针对单个应用的调用客户端
 #[derive(Clone)]
 pub struct AppClient {
-    app: PnosApp,
+    discovery: DiscoveryCache,
+    token: Arc<RwLock<Option<String>>>,
+    http: reqwest::Client,
+    config: Arc<SdkConfig>,
     target_app_id: String,
+    /// 是否通过 runtime 反向代理调用（默认 false，直连）
+    use_proxy: bool,
 }
 
 impl AppClient {
-    pub(crate) fn new(app: PnosApp, target_app_id: &str) -> Self {
+    pub(crate) fn new(
+        discovery: DiscoveryCache,
+        token: Arc<RwLock<Option<String>>>,
+        http: reqwest::Client,
+        config: Arc<SdkConfig>,
+        target_app_id: &str,
+    ) -> Self {
         Self {
-            app,
+            discovery,
+            token,
+            http,
+            config,
             target_app_id: target_app_id.to_string(),
+            use_proxy: false,
         }
+    }
+
+    /// 切换为通过 runtime 反向代理调用（/app/{id}/*）
+    pub fn via_proxy(mut self) -> Self {
+        self.use_proxy = true;
+        self
     }
 
     /// GET 请求
@@ -50,8 +79,7 @@ impl AppClient {
 
     fn request(&self, method: Method, path: &str) -> RequestBuilder {
         RequestBuilder {
-            app: self.app.clone(),
-            target_app_id: self.target_app_id.clone(),
+            client: self.clone(),
             method,
             path: path.to_string(),
             body: None,
@@ -62,8 +90,7 @@ impl AppClient {
 
 /// 请求构建器
 pub struct RequestBuilder {
-    app: PnosApp,
-    target_app_id: String,
+    client: AppClient,
     method: Method,
     path: String,
     body: Option<serde_json::Value>,
@@ -79,79 +106,104 @@ impl RequestBuilder {
 
     /// 发送请求并解析响应 data
     pub async fn send<T: DeserializeOwned>(self) -> Result<T> {
-        let resp = self.send_raw().await?;
+        let resp = self.send_with_retry().await?;
 
-        let api_resp: pnos::response::ApiResponse<T> = resp
+        let api_resp: ApiResponse<T> = resp
             .json()
             .await
-            .map_err(|e| PnosSdkError::Other(format!("解析响应失败: {e}")))?;
+            .map_err(|e| SdkError::Other(format!("解析响应失败: {e}")))?;
 
         if api_resp.code != 0 {
-            return Err(PnosSdkError::Api {
-                code: api_resp.code,
-                message: api_resp.message,
-            });
+            return Err(SdkError::new(
+                pnos::error::ErrorCode::Unknown,
+                format!("code={}, message={}", api_resp.code, api_resp.message),
+            ));
         }
 
         api_resp
             .data
-            .ok_or_else(|| PnosSdkError::Other("响应 data 为空".to_string()))
+            .ok_or_else(|| SdkError::Other("响应 data 为空".to_string()))
     }
 
-    /// 发送请求，只检查 code，不解析 data
+    /// 发送请求，只检查成功，不解析 data
     pub async fn send_empty(self) -> Result<()> {
-        let resp = self.send_raw().await?;
-        let api_resp: pnos::response::ApiResponse<serde_json::Value> = resp
+        let resp = self.send_with_retry().await?;
+        let api_resp: ApiResponse<serde_json::Value> = resp
             .json()
             .await
-            .map_err(|e| PnosSdkError::Other(format!("解析响应失败: {e}")))?;
+            .map_err(|e| SdkError::Other(format!("解析响应失败: {e}")))?;
 
         if api_resp.code != 0 {
-            return Err(PnosSdkError::Api {
-                code: api_resp.code,
-                message: api_resp.message,
-            });
+            return Err(SdkError::new(
+                pnos::error::ErrorCode::Unknown,
+                format!("code={}, message={}", api_resp.code, api_resp.message),
+            ));
         }
         Ok(())
     }
 
-    async fn send_raw(self) -> Result<reqwest::Response> {
-        // 1. 通过 pnos-runtime 发现目标应用地址
-        let discover_url = format!(
-            "{}/api/v1/apps/{}/discover",
-            self.app.config.runtime_url.trim_end_matches('/'),
-            self.target_app_id
+    /// 带重试地发送请求
+    async fn send_with_retry(self) -> Result<reqwest::Response> {
+        let max_retries = self.client.config.call_retries;
+        let mut last_error: Option<SdkError> = None;
+
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                // 退避：100ms * 2^attempt
+                let backoff = Duration::from_millis(100 * 2u64.pow(attempt.min(5)));
+                tokio::time::sleep(backoff).await;
+                debug!(
+                    "重试调用 {} {}/{} (第 {} 次)",
+                    self.client.target_app_id, self.method, self.path, attempt
+                );
+            }
+
+            match self.send_once().await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    // 只有网络错误和 5xx 才重试
+                    let retryable = matches!(e, SdkError::Network(_) | SdkError::AppUnreachable(_));
+                    if !retryable || attempt == max_retries {
+                        return Err(e);
+                    }
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| SdkError::Other("未知错误".to_string())))
+    }
+
+    /// 发送一次请求（无重试）
+    async fn send_once(&self) -> Result<reqwest::Response> {
+        let token = self.client.token.read().await.clone();
+
+        // 1. 确定目标 URL
+        let base_url = if self.client.use_proxy {
+            // 代理模式：通过 runtime 的 /app/{id}/* 转发
+            format!(
+                "{}/app/{}",
+                self.client.config.runtime_url.trim_end_matches('/'),
+                self.client.target_app_id
+            )
+        } else {
+            // 直连模式：通过服务发现获取地址
+            let discovered = self
+                .client
+                .discovery
+                .discover(&self.client.target_app_id)
+                .await?;
+            discovered.base_url
+        };
+
+        let url = format!("{}{}", base_url.trim_end_matches('/'), self.path);
+        debug!(
+            "调用 {} {} -> {}",
+            self.method, self.client.target_app_id, url
         );
 
-        let token = self.app.token().await;
-        let mut discover_req = self.app.http.get(&discover_url);
-        if let Some(t) = &token {
-            discover_req = discover_req.header("X-Pnos-Token", t);
-        }
-
-        let discover_resp = discover_req
-            .send()
-            .await
-            .map_err(|e| PnosSdkError::Network(format!("服务发现失败: {e}")))?;
-
-        if !discover_resp.status().is_success() {
-            return Err(PnosSdkError::AppNotFound(self.target_app_id.clone()));
-        }
-
-        let discover_body: pnos::response::ApiResponse<pnos::registry::AppDiscoverResponse> =
-            discover_resp
-                .json()
-                .await
-                .map_err(|e| PnosSdkError::Other(format!("解析服务发现响应失败: {e}")))?;
-
-        let base_url = discover_body
-            .data
-            .map(|d| d.base_url)
-            .ok_or_else(|| PnosSdkError::AppNotFound(self.target_app_id.clone()))?;
-
-        // 2. 构建实际请求
-        let url = format!("{}{}", base_url.trim_end_matches('/'), self.path);
-        let mut req = self.app.http.request(self.method, &url);
+        // 2. 构建请求
+        let mut req = self.client.http.request(self.method.clone(), &url);
 
         if let Some(t) = &token {
             req = req.header("X-Pnos-Token", t);
@@ -161,22 +213,20 @@ impl RequestBuilder {
             req = req.header(k, v);
         }
 
-        if let Some(body) = self.body {
-            req = req.json(&body);
+        if let Some(body) = &self.body {
+            req = req.json(body);
         }
 
+        // 3. 发送
         let resp = req
             .send()
             .await
-            .map_err(|e| PnosSdkError::AppUnreachable(format!("请求失败: {e}")))?;
+            .map_err(|e| SdkError::AppUnreachable(format!("请求失败: {e}")))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(PnosSdkError::Api {
-                code: status.as_u16() as u32,
-                message: format!("HTTP {status}: {text}"),
-            });
+            return Err(SdkError::AppUnreachable(format!("HTTP {status}: {text}")));
         }
 
         Ok(resp)
