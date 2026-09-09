@@ -1,7 +1,10 @@
-//! PandaNetOS 统一通信 SDK（v1.0）
+//! PandaNetOS 统一通信 SDK（v1.1）
 //!
 //! 引入后零通信代码：自动注册、心跳、注销、服务发现、认证、事件订阅、健康检查。
 //! 应用与 Agent 共用同一套 API，通过 component_type 区分。
+//!
+//! v1.1 可靠性增强：component_id 持久化、注册重试、心跳连续失败自动重注册、
+//! 优雅关闭超时控制、stale 缓存兜底、事件内存队列、检查点接口。
 //!
 //! # 快速开始（零通信代码）
 //!
@@ -45,6 +48,7 @@
 //! # }
 //! ```
 
+pub mod checkpoint;
 pub mod client;
 pub mod config;
 pub mod discovery;
@@ -59,6 +63,7 @@ pub mod server;
 pub mod ws;
 
 // ---- 最常用类型 re-export ----
+pub use checkpoint::CheckpointStore;
 pub use client::ComponentClient;
 pub use config::SdkConfig;
 pub use error::{Result, SdkError};
@@ -107,6 +112,8 @@ pub struct PnosApp {
     pub lifecycle: LifecycleManager,
     /// 内嵌 Web 服务器
     pub server: AppServer,
+    /// 检查点存储（有状态组件持久化状态用）
+    pub checkpoint: CheckpointStore,
     /// 认证 Token（注册后获得）
     token: Arc<RwLock<Option<String>>>,
     /// HTTP 客户端
@@ -160,6 +167,28 @@ impl PnosApp {
         self.lifecycle.shutdown().await;
     }
 
+    /// 保存检查点（有状态组件持久化状态用）
+    pub async fn save_checkpoint<T: serde::Serialize + Send + 'static>(
+        &self,
+        key: &str,
+        value: &T,
+    ) -> crate::error::Result<()> {
+        self.checkpoint.save(key, value).await
+    }
+
+    /// 加载检查点（不存在返回 None）
+    pub async fn load_checkpoint<T: serde::de::DeserializeOwned + Send + 'static>(
+        &self,
+        key: &str,
+    ) -> crate::error::Result<Option<T>> {
+        self.checkpoint.load(key).await
+    }
+
+    /// 删除检查点
+    pub async fn delete_checkpoint(&self, key: &str) -> crate::error::Result<()> {
+        self.checkpoint.delete(key).await
+    }
+
     /// 获取内嵌服务器（高级用户可自行操作）
     pub fn server(&self) -> &AppServer {
         &self.server
@@ -193,6 +222,7 @@ pub struct PnosAppBuilder {
     max_concurrent: Option<u32>,
     max_bandwidth_bps: Option<u64>,
     auto_heartbeat: bool,
+    graceful_shutdown_timeout: Option<std::time::Duration>,
     /// 收集的业务路由
     routes: Vec<(String, MethodRouter)>,
     /// 收集的事件回调
@@ -218,6 +248,7 @@ impl PnosAppBuilder {
             max_concurrent: None,
             max_bandwidth_bps: None,
             auto_heartbeat: true,
+            graceful_shutdown_timeout: None,
             routes: Vec::new(),
             event_handlers: Vec::new(),
         }
@@ -303,6 +334,12 @@ impl PnosAppBuilder {
         self
     }
 
+    /// 设置优雅关闭超时（默认 10s，对应 docker stop 超时）
+    pub fn graceful_shutdown_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.graceful_shutdown_timeout = Some(timeout);
+        self
+    }
+
     /// 添加业务路由
     pub fn route(mut self, path: &str, method_router: MethodRouter) -> Self {
         self.routes.push((path.to_string(), method_router));
@@ -338,7 +375,15 @@ impl PnosAppBuilder {
         if let Some(url) = &self.runtime_url {
             config.runtime_url = url.clone();
         }
+        if let Some(timeout) = self.graceful_shutdown_timeout {
+            config.graceful_shutdown_timeout = timeout;
+        }
         let config = Arc::new(config);
+
+        // 确保数据目录存在
+        if let Err(e) = config.ensure_data_dir() {
+            warn!("确保数据目录存在失败: {}", e);
+        }
 
         // 3. 创建 HTTP 客户端
         let http = reqwest::Client::builder()
@@ -361,8 +406,8 @@ impl PnosAppBuilder {
         // 8. 创建事件分发器
         let events = EventDispatcher::new();
 
-        // 9. 创建生命周期管理
-        let lifecycle = LifecycleManager::new();
+        // 9. 创建生命周期管理（带超时）
+        let lifecycle = LifecycleManager::new().with_timeout(config.graceful_shutdown_timeout);
 
         // 10. 创建内嵌服务器（添加业务路由）
         let mut server = AppServer::new(self.port, &self.version, token.clone());
@@ -370,10 +415,28 @@ impl PnosAppBuilder {
             server = server.route(&path, method_router);
         }
 
-        // 11. 注册到 runtime（统一组件注册请求）
+        // 10.5 初始化检查点存储
+        let checkpoint = CheckpointStore::open(&config.checkpoint_db).unwrap_or_else(|e| {
+            warn!("初始化检查点存储失败（将使用内存模式）: {}", e);
+            // 降级：用临时目录（不推荐，但保证不崩溃）
+            CheckpointStore::open(std::path::Path::new(":memory:")).expect("内存检查点存储不应失败")
+        });
+
+        // 11. 确定 component_id（优先使用持久化的 ID，重启后用原 ID 重注册）
+        let component_id = config
+            .load_component_id()
+            .unwrap_or_else(|| self.app_id.clone());
+        if component_id != self.app_id {
+            info!(
+                "使用持久化的 component_id: {} (原: {})",
+                component_id, self.app_id
+            );
+        }
+
+        // 12. 注册到 runtime（带指数退避重试，runtime 未就绪时自动重试）
         let register_req = ComponentRegisterRequest {
-            id: self.app_id.clone(),
-            name: self.app_id.clone(),
+            id: component_id.clone(),
+            name: component_id.clone(),
             version: self.version.clone(),
             component_type: self.component_type,
             port: self.port,
@@ -392,40 +455,82 @@ impl PnosAppBuilder {
             dependencies: self.dependencies.clone(),
         };
 
-        let register_resp = runtime.register(&register_req).await?;
+        let register_resp = runtime
+            .register_with_retry(&register_req, config.register_retry_timeout)
+            .await?;
         info!(
             "组件注册成功: {} (type={}, port={}, token={}...)",
-            self.app_id,
+            component_id,
             self.component_type,
             self.port,
             &register_resp.token[..register_resp.token.len().min(8)]
         );
         runtime.set_token(register_resp.token).await;
 
-        // 12. 启动自动心跳
+        // 标记为就绪（/health/ready 返回 200）
+        server.set_ready(true).await;
+
+        // 持久化 component_id（重启后用原 ID 重注册）
+        if let Err(e) = config.save_component_id(&component_id) {
+            warn!("持久化 component_id 失败: {}", e);
+        }
+
+        // 13. 启动自动心跳（连续失败 6 次后触发自动重注册）
         if self.auto_heartbeat {
             let runtime_clone = runtime.clone();
-            let interval = config.heartbeat_interval;
+            let config_clone = config.clone();
+            let register_req_clone = register_req.clone();
             tokio::spawn(async move {
+                let mut consecutive_failures = 0u32;
                 loop {
-                    tokio::time::sleep(interval).await;
-                    if let Err(e) = runtime_clone
+                    tokio::time::sleep(config_clone.heartbeat_interval).await;
+                    match runtime_clone
                         .heartbeat(ComponentStatus::Running, 0.0, 0, 0)
                         .await
                     {
-                        warn!("心跳异常: {}", e);
+                        Ok(_) => {
+                            consecutive_failures = 0;
+                        }
+                        Err(e) => {
+                            consecutive_failures += 1;
+                            warn!("心跳异常（连续 {} 次）: {}", consecutive_failures, e);
+                            // 连续失败 6 次（约 90s）→ 触发自动重注册
+                            if consecutive_failures >= 6 {
+                                warn!(
+                                    "心跳连续失败 {} 次，触发自动重注册...",
+                                    consecutive_failures
+                                );
+                                match runtime_clone
+                                    .register_with_retry(
+                                        &register_req_clone,
+                                        config_clone.register_retry_timeout,
+                                    )
+                                    .await
+                                {
+                                    Ok(resp) => {
+                                        runtime_clone.set_token(resp.token).await;
+                                        consecutive_failures = 0;
+                                        info!("自动重注册成功");
+                                    }
+                                    Err(e) => {
+                                        error!("自动重注册失败: {}", e);
+                                        // 继续重试，下一次心跳周期后再次尝试
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             });
         }
 
-        // 13. 启动 WebSocket 客户端
+        // 14. 启动 WebSocket 客户端
         ws.start();
 
-        // 14. 启动事件分发器（从 WS 接收消息）
+        // 15. 启动事件分发器（从 WS 接收消息）
         events.clone().start(ws_rx);
 
-        // 15. 注册事件回调
+        // 16. 注册事件回调
         for (pattern, handler) in self.event_handlers {
             // 订阅事件
             ws.subscribe(pattern.clone()).await;
@@ -436,14 +541,18 @@ impl PnosAppBuilder {
             });
         }
 
-        // 16. 注册关闭回调（注销 + 关闭 WS）
+        // 17. 注册关闭回调（标记未就绪 + 注销 + 关闭 WS）
         let runtime_clone = runtime.clone();
         let ws_clone = ws.clone();
+        let server_clone = server.clone();
         lifecycle.on_shutdown(move || {
             let runtime = runtime_clone.clone();
             let ws = ws_clone.clone();
+            let server = server_clone.clone();
             async move {
                 info!("正在注销组件...");
+                // 先标记为未就绪（/health/ready 返回 503）
+                server.set_ready(false).await;
                 ws.shutdown();
                 if let Err(e) = runtime.unregister().await {
                     error!("注销失败: {}", e);
@@ -454,7 +563,7 @@ impl PnosAppBuilder {
         });
 
         Ok(PnosApp {
-            app_id: self.app_id,
+            app_id: component_id,
             version: self.version,
             component_type: self.component_type,
             config,
@@ -463,6 +572,7 @@ impl PnosAppBuilder {
             ws,
             events,
             lifecycle,
+            checkpoint,
             token,
             http,
             server,

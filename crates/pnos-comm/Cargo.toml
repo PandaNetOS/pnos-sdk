@@ -38,3 +38,7 @@ futures-util = "0.3"
 
 # 工具
 url = "2"
+
+# 检查点持久化（SQLite）
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }

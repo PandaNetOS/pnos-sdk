@@ -2,6 +2,11 @@
 //!
 //! 自动挂载健康检查端点、认证中间件，开发者只需添加业务路由。
 //! 高级用户可通过 [`AppServer::into_router`] 获取 Router 自行组装。
+//!
+//! v1.1 健康检查分离：
+//! - `/health/live` — 进程存活探针（总是 200，供 supervisor/docker 健康检查）
+//! - `/health/ready` — 就绪探针（runtime 连接正常才 200，否则 503）
+//! - `/health` — 兼容旧路径，返回 live 状态
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -22,6 +27,8 @@ use crate::middleware::{auth_middleware, AuthState};
 #[derive(Clone)]
 struct ServerState {
     health_builder: Arc<RwLock<HealthBuilder>>,
+    /// 就绪状态（runtime 连接正常时为 true）
+    ready: Arc<RwLock<bool>>,
 }
 
 /// 内嵌 Web 服务器
@@ -30,14 +37,17 @@ pub struct AppServer {
     router: Router,
     addr: SocketAddr,
     health_builder: Arc<RwLock<HealthBuilder>>,
+    ready: Arc<RwLock<bool>>,
 }
 
 impl AppServer {
     /// 创建服务器（自动挂载 /health + 认证中间件）
     pub fn new(port: u16, version: impl Into<String>, token: Arc<RwLock<Option<String>>>) -> Self {
         let health_builder = Arc::new(RwLock::new(HealthBuilder::new(version)));
+        let ready = Arc::new(RwLock::new(false));
         let state = ServerState {
             health_builder: health_builder.clone(),
+            ready: ready.clone(),
         };
 
         let auth_state = AuthState::new(token);
@@ -45,6 +55,8 @@ impl AppServer {
         let router = Router::new()
             // 健康检查端点（在认证中间件之前，白名单放行）
             .route("/health", get(health_handler))
+            .route("/health/live", get(live_handler))
+            .route("/health/ready", get(ready_handler))
             .with_state(state)
             // 认证中间件（白名单路径自动放行）
             .layer(middleware::from_fn_with_state(auth_state, auth_middleware));
@@ -55,6 +67,7 @@ impl AppServer {
             router,
             addr,
             health_builder,
+            ready,
         }
     }
 
@@ -68,6 +81,16 @@ impl AppServer {
     pub fn merge(mut self, other: Router) -> Self {
         self.router = self.router.merge(other);
         self
+    }
+
+    /// 设置就绪状态（注册成功后设为 true，关闭时设为 false）
+    pub async fn set_ready(&self, ready: bool) {
+        *self.ready.write().await = ready;
+    }
+
+    /// 获取就绪状态
+    pub async fn is_ready(&self) -> bool {
+        *self.ready.read().await
     }
 
     /// 获取健康检查构建器（可用于更新依赖状态）
@@ -93,9 +116,38 @@ impl AppServer {
     }
 }
 
-/// 健康检查处理函数
+/// 健康检查处理函数（兼容旧路径，返回 live 状态）
 async fn health_handler(State(state): State<ServerState>) -> impl IntoResponse {
     let builder = state.health_builder.read().await;
     let response = builder.build();
     (StatusCode::OK, axum::Json(response)).into_response()
+}
+
+/// 存活探针（总是 200，进程挂了就没响应）
+async fn live_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({"status": "alive"})),
+    )
+        .into_response()
+}
+
+/// 就绪探针（runtime 连接正常才 200，否则 503）
+async fn ready_handler(State(state): State<ServerState>) -> impl IntoResponse {
+    let ready = *state.ready.read().await;
+    if ready {
+        (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({"status": "ready"})),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(
+                serde_json::json!({"status": "not_ready", "reason": "runtime not connected"}),
+            ),
+        )
+            .into_response()
+    }
 }

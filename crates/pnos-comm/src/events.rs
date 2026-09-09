@@ -3,6 +3,7 @@
 //! 从 WebSocket 客户端接收 [`pnos::events::WsMessage`]，
 //! 按事件类型分发给注册的回调。支持前缀匹配（如 `app.*` 匹配所有 `app.` 开头的事件）。
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -27,17 +28,79 @@ pub(crate) struct Listener {
     pub(crate) handler: EventHandler,
 }
 
+/// 事件去重器（基于 event_id，滑动窗口）
+///
+/// WS 重连回放时可能收到重复事件，用 event_id 去重。
+/// 维护最近 N 个已处理的 event_id，超过窗口的自动移除。
+#[derive(Clone)]
+pub struct EventDeduplicator {
+    seen: Arc<RwLock<VecDeque<String>>>,
+    max_size: usize,
+}
+
+impl EventDeduplicator {
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            seen: Arc::new(RwLock::new(VecDeque::with_capacity(max_size))),
+            max_size,
+        }
+    }
+
+    /// 检查事件是否已处理，未处理则标记为已处理
+    /// 返回 true 表示是新事件（未处理过），false 表示重复事件
+    pub async fn check_and_mark(&self, event_id: &str) -> bool {
+        let mut seen = self.seen.write().await;
+        if seen.contains(&event_id.to_string()) {
+            return false;
+        }
+        seen.push_back(event_id.to_string());
+        if seen.len() > self.max_size {
+            seen.pop_front();
+        }
+        true
+    }
+
+    /// 清空去重记录
+    pub async fn clear(&self) {
+        self.seen.write().await.clear();
+    }
+
+    /// 当前已记录的事件数
+    pub async fn len(&self) -> usize {
+        self.seen.read().await.len()
+    }
+
+    /// 是否为空
+    pub async fn is_empty(&self) -> bool {
+        self.seen.read().await.is_empty()
+    }
+}
+
+impl Default for EventDeduplicator {
+    fn default() -> Self {
+        Self::new(10000) // 默认窗口 10000 个事件
+    }
+}
+
 /// 事件分发器
 #[derive(Clone)]
 pub struct EventDispatcher {
     pub(crate) listeners: Arc<RwLock<Vec<Listener>>>,
+    /// 事件去重器（WS 重连回放时去重）
+    deduplicator: EventDeduplicator,
 }
 
 impl EventDispatcher {
     pub fn new() -> Self {
         Self {
             listeners: Arc::new(RwLock::new(Vec::new())),
+            deduplicator: EventDeduplicator::default(),
         }
+    }
+
+    /// 获取去重器引用
+    pub fn deduplicator(&self) -> EventDeduplicator {
+        self.deduplicator.clone()
     }
 
     /// 注册事件回调
@@ -68,6 +131,14 @@ impl EventDispatcher {
 
     /// 分发一条消息到所有匹配的监听器
     pub async fn dispatch(&self, msg: WsMessage) {
+        // 事件去重（WS 重连回放时可能收到重复事件）
+        // TODO: 未来 pnos-spec 增加 event_id 字段后改用 event_id
+        let dedup_key = format!("{}:{}:{}", msg.event_type, msg.source, msg.timestamp);
+        if !self.deduplicator.check_and_mark(&dedup_key).await {
+            debug!("重复事件，跳过: {}", dedup_key);
+            return;
+        }
+
         let listeners = self.listeners.read().await;
         let event_type = &msg.event_type;
 

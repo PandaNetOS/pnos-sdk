@@ -4,6 +4,7 @@
 //! 系统信息/监控/健康检查。所有请求自动带 `X-Pnos-Token`。
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use pnos::component::{ComponentStatus, ComponentType};
 use pnos::discovery::ComponentDiscoverResponse;
@@ -85,6 +86,38 @@ impl RuntimeClient {
 
         body.data
             .ok_or_else(|| SdkError::Other("注册响应 data 为空".to_string()))
+    }
+
+    /// 注册组件（带指数退避重试，runtime 未就绪时自动重试）
+    ///
+    /// 重试策略：1s, 2s, 4s, 8s, 16s，最多重试到 timeout（默认 30s）
+    pub async fn register_with_retry(
+        &self,
+        req: &ComponentRegisterRequest,
+        timeout: Duration,
+    ) -> Result<ComponentRegisterResponse> {
+        let start = std::time::Instant::now();
+        let mut attempt = 0u32;
+
+        loop {
+            match self.register(req).await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    attempt += 1;
+                    let elapsed = start.elapsed();
+                    if elapsed >= timeout {
+                        warn!("注册超时（{:?}），最后错误: {}", timeout, e);
+                        return Err(e);
+                    }
+                    // 指数退避：1s, 2s, 4s, 8s, 16s（上限 16s）
+                    let backoff = Duration::from_secs(1u64 << attempt.min(4));
+                    // 剩余时间不足时，只等剩余时间
+                    let wait = backoff.min(timeout.saturating_sub(elapsed));
+                    debug!("注册失败（第 {} 次），{:?} 后重试: {}", attempt, wait, e);
+                    tokio::time::sleep(wait).await;
+                }
+            }
+        }
     }
 
     /// 注销组件
