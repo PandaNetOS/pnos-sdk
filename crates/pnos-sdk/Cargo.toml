@@ -1,0 +1,40 @@
+[package]
+name = "pnos-sdk"
+version = "1.0.0"
+edition.workspace = true
+description = "PandaNetOS 统一通信 SDK - 零代码自动注册、心跳、发现、认证、事件、健康检查（应用与Agent共用）"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pnos.workspace = true
+
+# HTTP 客户端
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# 错误
+thiserror = "1"
+anyhow = "1"
+
+# 内嵌 Web 服务器（自动暴露 /health /ws + 认证中间件）
+axum = { version = "0.7", features = ["ws"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# WebSocket 客户端（事件订阅）
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"], default-features = false }
+futures-util = "0.3"
+
+# 工具
+url = "2"
