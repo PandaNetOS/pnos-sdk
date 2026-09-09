@@ -6,7 +6,7 @@
 //! # 快速开始（零通信代码）
 //!
 //! ```rust,no_run
-//! use pnos_sdk::PnosApp;
+//! use pnos_comm::PnosApp;
 //! use axum::{routing::get, Json};
 //! use serde_json::json;
 //!
@@ -30,7 +30,7 @@
 //! # Agent 模式
 //!
 //! ```rust,no_run
-//! use pnos_sdk::PnosApp;
+//! use pnos_comm::PnosApp;
 //! use pnos::component::ComponentType;
 //!
 //! # async fn example() -> anyhow::Result<()> {

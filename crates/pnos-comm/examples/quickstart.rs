@@ -10,13 +10,13 @@
 //! 5. 优雅关闭
 
 use axum::{routing::get, Json};
-use pnos_sdk::PnosApp;
+use pnos_comm::PnosApp;
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // 初始化日志（SDK 内部也会初始化，这里显式调用确保早于 SDK）
-    pnos_sdk::logging::init_logging();
+    pnos_comm::logging::init_logging();
 
     PnosApp::builder("demo-app")
         .version("0.1.0")

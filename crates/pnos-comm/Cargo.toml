@@ -1,5 +1,5 @@
 [package]
-name = "pnos-sdk"
+name = "pnos-comm"
 version = "1.0.0"
 edition.workspace = true
 description = "PandaNetOS 统一通信 SDK - 零代码自动注册、心跳、发现、认证、事件、健康检查（应用与Agent共用）"

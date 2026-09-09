@@ -16,7 +16,7 @@ PandaNetOS 应用开发 SDK。应用启动自动注册到 pnos-runtime，定期�
 ## 快速开始
 
 ```rust
-use pnos_sdk::PnosApp;
+use pnos_comm::PnosApp;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -57,7 +57,7 @@ app.call("spde").post("/api/v1/start", &()).send_empty().await?;
 ## 健康检查
 
 ```rust
-use pnos_sdk::HealthBuilder;
+use pnos_comm::HealthBuilder;
 
 let health = HealthBuilder::new("0.1.0")
     .dependency_ok("pk")
