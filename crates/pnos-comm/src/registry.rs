@@ -25,6 +25,8 @@ pub struct RuntimeClient {
     config: Arc<SdkConfig>,
     http: reqwest::Client,
     token: Arc<RwLock<Option<String>>>,
+    /// 实际注册使用的 component_id（可能与 config.app_id 不同：持久化 id 优先）
+    component_id: Arc<RwLock<Option<String>>>,
 }
 
 impl RuntimeClient {
@@ -37,6 +39,7 @@ impl RuntimeClient {
             config,
             http,
             token,
+            component_id: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -48,6 +51,23 @@ impl RuntimeClient {
     /// 设置 token（注册成功后调用）
     pub async fn set_token(&self, token: String) {
         *self.token.write().await = Some(token);
+    }
+
+    /// 设置实际注册使用的 component_id
+    ///
+    /// 必须在注册确定 id 后、心跳/注销之前调用，
+    /// 保证心跳与注销使用与注册一致的 id（否则 runtime 会找不到组件）。
+    pub async fn set_component_id(&self, component_id: String) {
+        *self.component_id.write().await = Some(component_id);
+    }
+
+    /// 当前组件 ID：优先使用注册时确定的 component_id，回退 config.app_id
+    async fn current_id(&self) -> String {
+        self.component_id
+            .read()
+            .await
+            .clone()
+            .unwrap_or_else(|| self.config.app_id.clone())
     }
 
     /// 注册组件
@@ -124,9 +144,10 @@ impl RuntimeClient {
     pub async fn unregister(&self) -> Result<bool> {
         let url = format!("{}/components/unregister", self.config.api_base());
         let token = self.token().await;
+        let component_id = self.current_id().await;
 
         let mut req = self.http.post(&url).json(&serde_json::json!({
-            "id": self.config.app_id
+            "id": component_id
         }));
         if let Some(t) = &token {
             req = req.header("X-Pnos-Token", t);
@@ -157,9 +178,10 @@ impl RuntimeClient {
     ) -> Result<bool> {
         let url = format!("{}/components/heartbeat", self.config.api_base());
         let token = self.token().await;
+        let component_id = self.current_id().await;
 
         let req_body = HeartbeatRequest {
-            id: self.config.app_id.clone(),
+            id: component_id,
             status,
             active_tasks,
             bytes_downloaded,

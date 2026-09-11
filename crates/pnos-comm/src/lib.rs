@@ -432,6 +432,10 @@ impl PnosAppBuilder {
                 component_id, self.app_id
             );
         }
+        // 关键修复：让 runtime 客户端在心跳/注销时使用与注册一致的 component_id
+        // （此前心跳/注销误用 config.app_id，当持久化 id ≠ app_id 时会导致
+        //  runtime 找不到组件、心跳被静默丢弃、组件被标记离线）
+        runtime.set_component_id(component_id.clone()).await;
 
         // 12. 注册到 runtime（带指数退避重试，runtime 未就绪时自动重试）
         let register_req = ComponentRegisterRequest {
@@ -484,39 +488,44 @@ impl PnosAppBuilder {
                 let mut consecutive_failures = 0u32;
                 loop {
                     tokio::time::sleep(config_clone.heartbeat_interval).await;
-                    match runtime_clone
+                    // 心跳返回 bool：false 表示 runtime 未接受（组件可能不存在），须视为失败
+                    let accepted = match runtime_clone
                         .heartbeat(ComponentStatus::Running, 0.0, 0, 0)
                         .await
                     {
-                        Ok(_) => {
-                            consecutive_failures = 0;
-                        }
+                        Ok(ok) => ok,
                         Err(e) => {
-                            consecutive_failures += 1;
-                            warn!("心跳异常（连续 {} 次）: {}", consecutive_failures, e);
-                            // 连续失败 6 次（约 90s）→ 触发自动重注册
-                            if consecutive_failures >= 6 {
-                                warn!(
-                                    "心跳连续失败 {} 次，触发自动重注册...",
-                                    consecutive_failures
-                                );
-                                match runtime_clone
-                                    .register_with_retry(
-                                        &register_req_clone,
-                                        config_clone.register_retry_timeout,
-                                    )
-                                    .await
-                                {
-                                    Ok(resp) => {
-                                        runtime_clone.set_token(resp.token).await;
-                                        consecutive_failures = 0;
-                                        info!("自动重注册成功");
-                                    }
-                                    Err(e) => {
-                                        error!("自动重注册失败: {}", e);
-                                        // 继续重试，下一次心跳周期后再次尝试
-                                    }
-                                }
+                            warn!("心跳请求异常: {}", e);
+                            false
+                        }
+                    };
+                    if accepted {
+                        consecutive_failures = 0;
+                        continue;
+                    }
+                    consecutive_failures += 1;
+                    warn!(
+                        "心跳未被 runtime 接受（连续 {} 次，组件可能未注册）",
+                        consecutive_failures
+                    );
+                    // 连续失败 6 次（约 90s）→ 触发自动重注册
+                    if consecutive_failures >= 6 {
+                        warn!("心跳连续失败 {} 次，触发自动重注册...", consecutive_failures);
+                        match runtime_clone
+                            .register_with_retry(
+                                &register_req_clone,
+                                config_clone.register_retry_timeout,
+                            )
+                            .await
+                        {
+                            Ok(resp) => {
+                                runtime_clone.set_token(resp.token).await;
+                                consecutive_failures = 0;
+                                info!("自动重注册成功");
+                            }
+                            Err(e) => {
+                                error!("自动重注册失败: {}", e);
+                                // 继续重试，下一次心跳周期后再次尝试
                             }
                         }
                     }
