@@ -70,7 +70,7 @@ let health = HealthBuilder::new("0.1.0")
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `PNOS_RUNTIME_URL` | pnos-runtime 地址 | `http://127.0.0.1:80` |
+| `PNOS_RUNTIME_URL` | pnos-runtime 地址 | `http://127.0.0.1:8080` |
 | `PNOS_DATA_DIR` | 应用数据目录 | `/pnos/data/apps` |
 | `PNOS_MEDIA_DIR` | 媒体目录 | `/pnos/media` |
 

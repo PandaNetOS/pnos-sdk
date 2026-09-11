@@ -1,0 +1,27 @@
+[package]
+name = "pnos-net"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/PandaNetOS/pnos-sdk"
+description = "PandaNetOS 外部互联 SDK：节点发现、NAT 穿透、P2P 连接建立"
+
+[dependencies]
+pnos = { git = "https://github.com/PandaNetOS/pnos-spec.git", branch = "main" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tokio = { version = "1", features = ["full"] }
+parking_lot = "0.12"
+rand = "0.8"
+igd = "0.12"
+async-trait = "0.1"
+bincode = "1"
+socket2 = "0.6"
+hex = "0.4"
+rumqttc = "0.24"
+hickory-resolver = "0.24"
+
+[dev-dependencies]
+tokio-test = "0.4"
