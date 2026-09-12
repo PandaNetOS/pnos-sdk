@@ -31,6 +31,7 @@ pub mod dns;
 pub mod nat;
 pub mod net_agent;
 pub mod strategy;
+pub mod transport;
 pub mod types;
 
 // 常用类型 re-export

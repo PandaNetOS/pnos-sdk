@@ -1,0 +1,23 @@
+[package]
+name = "pnos-bench"
+version = "0.1.0"
+edition = "2021"
+description = "PandaNetOS 通用压测框架"
+license = "MIT"
+
+[[bin]]
+name = "pnos-bench"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hdrhistogram = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

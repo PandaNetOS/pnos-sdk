@@ -36,11 +36,12 @@ use parking_lot::RwLock;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
-use crate::connector::TcpConnection;
 use crate::discovery::lpd::{LpdDiscoveryService, DEFAULT_LPD_MULTICAST_ADDR};
 use crate::discovery::peer_cache::PeerCache;
 use crate::nat::{HolePuncher, HolePunchConfig, NatConfig, NatManager, NatStatus};
-use crate::strategy::{ConnectStrategy, ConnectStrategyConfig, ConnectResult};
+use crate::strategy::{ConnectMethod, ConnectStrategy, ConnectStrategyConfig, ConnectResult};
+use crate::transport::tcp::TcpTransport;
+use crate::transport::{IrohTransport, IrohTransportConfig, Transport, TransportKind, TransportMode, TransportRouter};
 use crate::types::{DiscoveredNode, NodeId, Reachability};
 
 /// NetAgent 配置
@@ -66,6 +67,10 @@ pub struct NetAgentConfig {
     pub hole_punch_enabled: bool,
     /// 连接策略配置
     pub connect_config: ConnectStrategyConfig,
+    /// 传输模式（默认 TcpOnly）
+    pub transport_mode: TransportMode,
+    /// Iroh 传输配置（transport_mode != TcpOnly 时使用）
+    pub iroh_config: Option<IrohTransportConfig>,
 }
 
 impl NetAgentConfig {
@@ -82,6 +87,8 @@ impl NetAgentConfig {
             nat_enabled: true,
             hole_punch_enabled: true,
             connect_config: ConnectStrategyConfig::default(),
+            transport_mode: TransportMode::TcpOnly,
+            iroh_config: None,
         }
     }
 }
@@ -116,8 +123,8 @@ pub struct NetAgent {
     nat_manager: Option<Arc<NatManager>>,
     /// UDP 打洞器
     hole_puncher: Option<Arc<HolePuncher>>,
-    /// 连接策略引擎
-    strategy: Arc<ConnectStrategy>,
+    /// 传输路由器
+    transport: Arc<TransportRouter>,
     /// 节点缓存
     peer_cache: RwLock<PeerCache>,
     /// 事件广播
@@ -169,17 +176,26 @@ impl NetAgent {
             None
         };
 
-        // 创建连接策略引擎
+        // 创建连接策略引擎 → 包装为 TcpTransport → 包装为 TransportRouter
         let mut strategy = ConnectStrategy::new(config.connect_config.clone());
         if let Some(hp) = &hole_puncher {
             strategy = strategy.with_hole_puncher(hp.clone());
         }
+        let tcp_transport = TcpTransport::new(strategy);
+        let mut router = TransportRouter::new(config.transport_mode)
+            .with_tcp(tcp_transport);
+        // 注入 IrohTransport（如果配置了）
+        if let Some(iroh_cfg) = &config.iroh_config {
+            let iroh_transport = IrohTransport::new(iroh_cfg.clone());
+            router = router.with_iroh(iroh_transport);
+        }
+        let transport = router;
 
         Ok(Arc::new(Self {
             config,
             nat_manager,
             hole_puncher,
-            strategy: Arc::new(strategy),
+            transport: Arc::new(transport),
             peer_cache: RwLock::new(peer_cache),
             event_tx,
             discovered_tx,
@@ -187,6 +203,20 @@ impl NetAgent {
             shutdown,
             started: RwLock::new(false),
         }))
+    }
+
+    /// 仅启动传输层（TCP + Iroh），不启动 NAT 映射和发现服务
+    /// 适用于已有独立发现机制的调用方（如 PDC 联邦层）
+    pub async fn start_transport_only(self: &Arc<Self>) -> anyhow::Result<()> {
+        if *self.started.read() {
+            warn!("[net-agent] NetAgent 已启动，忽略重复启动");
+            return Ok(());
+        }
+        info!("[net-agent] 仅启动传输层（TCP + Iroh）...");
+        self.transport.start().await?;
+        *self.started.write() = true;
+        info!("[net-agent] 传输层启动完成");
+        Ok(())
     }
 
     /// 启动 NetAgent（NAT 探测 + 发现机制）
@@ -197,6 +227,9 @@ impl NetAgent {
         }
 
         info!("[net-agent] 启动外部互联 SDK...");
+
+        // 0. 启动传输层（TCP + Iroh）
+        self.transport.start().await?;
 
         // 1. NAT 端口映射（自动映射 TCP+UDP 的 listen_port）
         if let Some(nat_mgr) = &self.nat_manager {
@@ -336,25 +369,40 @@ impl NetAgent {
         );
 
         match self
-            .strategy
-            .connect(addrs, peer_reachability, peer_nat_type)
+            .transport
+            .connect(node_id, addrs, peer_reachability, peer_nat_type)
             .await
         {
             Ok(result) => {
+                let connected_addr = result.connected_addr.unwrap_or(addrs[0]);
+                let method = match result.kind {
+                    TransportKind::Tcp => ConnectMethod::TcpDirect,
+                    TransportKind::UdpHolePunch => ConnectMethod::UdpHolePunch,
+                    TransportKind::TcpRelay => ConnectMethod::Relay,
+                    TransportKind::IrohDirect
+                    | TransportKind::IrohHolePunch
+                    | TransportKind::IrohRelay => ConnectMethod::TcpDirect,
+                };
+                let connect_result = ConnectResult {
+                    connection: result.stream,
+                    method,
+                    total_latency: result.latency,
+                };
+
                 let _ = self.event_tx.send(NetEvent::Connected {
                     node_id,
-                    addr: result.connection.connected_addr,
-                    method: result.method.to_string(),
-                    latency: result.total_latency,
+                    addr: connected_addr,
+                    method: method.to_string(),
+                    latency: result.latency,
                 });
 
                 // 连接成功，更新 PeerCache
                 if self.config.peer_cache_enabled {
-                    let addr_str = result.connection.connected_addr.to_string();
+                    let addr_str = connected_addr.to_string();
                     self.peer_cache.write().upsert(&node_id.0, &addr_str, true);
                 }
 
-                Ok(result)
+                Ok(connect_result)
             }
             Err(e) => {
                 let reason = e.to_string();

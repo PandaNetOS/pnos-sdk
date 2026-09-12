@@ -22,6 +22,10 @@ socket2 = "0.6"
 hex = "0.4"
 rumqttc = "0.24"
 hickory-resolver = "0.24"
+iroh = { version = "1.0", default-features = false, features = ["tls-ring", "portmapper"] }
+hkdf = "0.12"
+sha2 = "0.10"
+tokio-util = { version = "0.7", features = ["compat"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

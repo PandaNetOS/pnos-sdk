@@ -14,6 +14,8 @@ use tracing::{debug, info, warn};
 
 use crate::connector::{connect_any, TcpConnectConfig, TcpConnection};
 use crate::nat::HolePuncher;
+use crate::transport::tcp::TcpTransportStream;
+use crate::transport::TransportKind;
 use crate::types::Reachability;
 
 /// 连接策略配置
@@ -63,8 +65,8 @@ impl std::fmt::Display for ConnectMethod {
 
 /// 连接结果
 pub struct ConnectResult {
-    /// 已建立的 TCP 连接
-    pub connection: TcpConnection,
+    /// 已建立的传输连接（TCP 或 Iroh）
+    pub connection: Box<dyn crate::transport::TransportStream>,
     /// 实际使用的连接方式
     pub method: ConnectMethod,
     /// 总耗时
@@ -132,7 +134,10 @@ impl ConnectStrategy {
                     conn.latency
                 );
                 return Ok(ConnectResult {
-                    connection: conn,
+                    connection: Box::new(TcpTransportStream::new(
+                        conn.stream,
+                        TransportKind::Tcp,
+                    )),
                     method: ConnectMethod::TcpDirect,
                     total_latency: start.elapsed(),
                 });
@@ -164,7 +169,10 @@ impl ConnectStrategy {
                                     start.elapsed()
                                 );
                                 return Ok(ConnectResult {
-                                    connection: conn,
+                                    connection: Box::new(TcpTransportStream::new(
+                                        conn.stream,
+                                        TransportKind::UdpHolePunch,
+                                    )),
                                     method: ConnectMethod::UdpHolePunch,
                                     total_latency: start.elapsed(),
                                 });
