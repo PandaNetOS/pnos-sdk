@@ -132,6 +132,14 @@ impl LpdDiscoveryService {
                 let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
                 sock.set_reuse_address(true)?;
                 sock.bind(&bind_addr.into())?;
+                // 设置多播出站接口（多网卡环境下避免发送到错误接口）
+                if let Some(iface_ip) = detect_default_outbound_ipv4() {
+                    if let Err(e) = sock.set_multicast_if_v4(&iface_ip) {
+                        debug!("[net-lpd] 设置多播出站接口 {} 失败: {}", iface_ip, e);
+                    } else {
+                        info!("[net-lpd] 多播出站接口已设置为 {}", iface_ip);
+                    }
+                }
                 Ok(sock.into())
             })() {
                 Ok(s) => s,
@@ -154,6 +162,8 @@ impl LpdDiscoveryService {
                 return;
             }
             let _ = socket.set_multicast_loop_v4(true);
+
+            // 2.1 多播出站接口已在 socket2 阶段设置（见下方）
 
             info!(
                 "[net-lpd] LPD 多播发现已启动: group={}:{}, 联邦端口:{}, API端口:{}, 间隔:{}s",
@@ -275,6 +285,19 @@ fn current_unix_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// 检测默认出站 IPv4 地址（通过连接公共 DNS 获取本机出站接口 IP）
+///
+/// 多网卡环境下，多播可能被发送到错误的接口（如 VPN/蓝牙）。
+/// 通过连接 8.8.8.8:80 获取操作系统选择的默认出站接口地址。
+fn detect_default_outbound_ipv4() -> Option<Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    match socket.local_addr().ok()? {
+        std::net::SocketAddr::V4(v4) => Some(*v4.ip()),
+        std::net::SocketAddr::V6(_) => None,
+    }
 }
 
 #[cfg(test)]
