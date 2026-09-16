@@ -21,7 +21,10 @@ impl NodeId {
 
     pub fn from_hex(s: &str) -> anyhow::Result<Self> {
         if s.len() != 40 {
-            anyhow::bail!("节点 ID 必须是 40 字符十六进制字符串，实际长度: {}", s.len());
+            anyhow::bail!(
+                "节点 ID 必须是 40 字符十六进制字符串，实际长度: {}",
+                s.len()
+            );
         }
         let mut id = [0u8; 20];
         for i in 0..20 {

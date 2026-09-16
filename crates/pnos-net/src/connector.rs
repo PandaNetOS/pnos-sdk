@@ -75,7 +75,12 @@ pub async fn connect_any(
             {
                 Ok(Ok(stream)) => {
                     let latency = start.elapsed();
-                    trace!("[net-connector] TCP 连接成功: {} (耗时 {:?}, 第{}次尝试)", addr, latency, attempt + 1);
+                    trace!(
+                        "[net-connector] TCP 连接成功: {} (耗时 {:?}, 第{}次尝试)",
+                        addr,
+                        latency,
+                        attempt + 1
+                    );
                     // 设置 TCP_NODELAY 降低延迟
                     let _ = stream.set_nodelay(true);
                     return Ok(TcpConnection {
@@ -85,12 +90,25 @@ pub async fn connect_any(
                     });
                 }
                 Ok(Err(e)) => {
-                    debug!("[net-connector] TCP 连接 {} 失败(第{}次): {}", addr, attempt + 1, e);
+                    debug!(
+                        "[net-connector] TCP 连接 {} 失败(第{}次): {}",
+                        addr,
+                        attempt + 1,
+                        e
+                    );
                     last_error = Some(anyhow::anyhow!("连接 {} 失败: {}", addr, e));
                 }
                 Err(_) => {
-                    debug!("[net-connector] TCP 连接 {} 超时(第{}次)", addr, attempt + 1);
-                    last_error = Some(anyhow::anyhow!("连接 {} 超时({:?})", addr, config.connect_timeout));
+                    debug!(
+                        "[net-connector] TCP 连接 {} 超时(第{}次)",
+                        addr,
+                        attempt + 1
+                    );
+                    last_error = Some(anyhow::anyhow!(
+                        "连接 {} 超时({:?})",
+                        addr,
+                        config.connect_timeout
+                    ));
                 }
             }
 

@@ -71,6 +71,6 @@ pub trait Transport: Send + Sync {
 }
 
 // 统一 re-export，外部通过 crate::transport:: 访问
+pub use iroh::{IrohIdentity, IrohTransport, IrohTransportConfig};
 pub use router::{TransportMode, TransportRouter, TransportStats};
 pub use tcp::{TcpTransport, TcpTransportStream};
-pub use iroh::{IrohIdentity, IrohTransport, IrohTransportConfig};

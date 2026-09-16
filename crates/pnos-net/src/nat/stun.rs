@@ -227,16 +227,14 @@ pub fn stun_binding_request(
     local_addr: &str,
     timeout: Duration,
 ) -> anyhow::Result<StunResult> {
-    let server_addr: SocketAddr = stun_server
-        .parse()
-        .or_else(|_| {
-            // 解析域名
-            use std::net::ToSocketAddrs;
-            stun_server
-                .to_socket_addrs()?
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("STUN 服务器 DNS 解析失败: {}", stun_server))
-        })?;
+    let server_addr: SocketAddr = stun_server.parse().or_else(|_| {
+        // 解析域名
+        use std::net::ToSocketAddrs;
+        stun_server
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("STUN 服务器 DNS 解析失败: {}", stun_server))
+    })?;
 
     let socket = UdpSocket::bind(local_addr)?;
     socket.set_read_timeout(Some(timeout))?;
@@ -371,10 +369,7 @@ pub fn detect_nat_type(
     // 比较两个映射地址
     if mapped_a == mapped_b {
         // 相同的映射地址对所有外部服务器可见 → Full Cone NAT
-        debug!(
-            "[stun] NAT 类型: Full Cone（映射地址一致: {}）",
-            mapped_a
-        );
+        debug!("[stun] NAT 类型: Full Cone（映射地址一致: {}）", mapped_a);
         NatType::FullCone
     } else {
         // 不同的外部服务器得到不同的映射地址 → Symmetric NAT
@@ -387,18 +382,17 @@ pub fn detect_nat_type(
 }
 
 /// 从多个 STUN 服务器中选择两个不同的服务器进行 NAT 类型检测
-pub fn detect_nat_type_multi(
-    servers: &[String],
-    local_addr: &str,
-    timeout: Duration,
-) -> NatType {
+pub fn detect_nat_type_multi(servers: &[String], local_addr: &str, timeout: Duration) -> NatType {
     if servers.len() < 2 {
         // 只有一个服务器时，使用默认的第二个服务器
         let default_servers = [
             "stun.l.google.com:19302".to_string(),
             "stun1.l.google.com:19302".to_string(),
         ];
-        let server_a = servers.first().cloned().unwrap_or_else(|| default_servers[0].clone());
+        let server_a = servers
+            .first()
+            .cloned()
+            .unwrap_or_else(|| default_servers[0].clone());
         let server_b = default_servers[1].clone();
         return detect_nat_type(&server_a, &server_b, local_addr, timeout);
     }
@@ -479,7 +473,10 @@ mod tests {
         assert_eq!(req.len(), 20);
         assert_eq!(u16::from_be_bytes([req[0], req[1]]), STUN_BINDING_REQUEST);
         assert_eq!(u16::from_be_bytes([req[2], req[3]]), 0);
-        assert_eq!(u32::from_be_bytes([req[4], req[5], req[6], req[7]]), STUN_MAGIC_COOKIE);
+        assert_eq!(
+            u32::from_be_bytes([req[4], req[5], req[6], req[7]]),
+            STUN_MAGIC_COOKIE
+        );
         assert_eq!(&req[8..20], &tid);
     }
 
@@ -518,11 +515,7 @@ mod tests {
     #[test]
     fn test_stun_offline() {
         // 离线环境下应该超时失败而不是 panic
-        let result = stun_binding_request(
-            "127.0.0.1:1",
-            "0.0.0.0:0",
-            Duration::from_millis(50),
-        );
+        let result = stun_binding_request("127.0.0.1:1", "0.0.0.0:0", Duration::from_millis(50));
         // 可能成功也可能失败，取决于是否有本地 STUN 服务器
         // 只要不 panic 就通过
         let _ = result;

@@ -7,8 +7,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tracing::{debug, warn};
 use parking_lot::RwLock;
+use tracing::{debug, warn};
 
 use super::iroh::IrohTransport;
 use super::tcp::TcpTransport;
@@ -51,7 +51,12 @@ pub struct TransportRouter {
 
 impl TransportRouter {
     pub fn new(mode: TransportMode) -> Self {
-        Self { mode, tcp: None, iroh: None, stats: RwLock::new(TransportStats::default()) }
+        Self {
+            mode,
+            tcp: None,
+            iroh: None,
+            stats: RwLock::new(TransportStats::default()),
+        }
     }
 
     pub fn with_tcp(mut self, tcp: TcpTransport) -> Self {
@@ -77,7 +82,9 @@ impl TransportRouter {
         nat_type: Option<String>,
         is_iroh: bool,
     ) -> anyhow::Result<TransportConnectResult> {
-        let result = transport.connect(node_id, addrs, reachability, nat_type).await;
+        let result = transport
+            .connect(node_id, addrs, reachability, nat_type)
+            .await;
         let mut stats = self.stats.write();
         if is_iroh {
             stats.iroh_attempts += 1;
@@ -132,14 +139,20 @@ impl Transport for TransportRouter {
     ) -> anyhow::Result<TransportConnectResult> {
         match self.mode {
             TransportMode::TcpOnly => {
-                let tcp = self.tcp.as_ref()
+                let tcp = self
+                    .tcp
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("TcpOnly 模式但未配置 TcpTransport"))?;
-                self.connect_with(tcp.as_ref(), node_id, addrs, reachability, nat_type, false).await
+                self.connect_with(tcp.as_ref(), node_id, addrs, reachability, nat_type, false)
+                    .await
             }
             TransportMode::IrohOnly => {
-                let iroh = self.iroh.as_ref()
+                let iroh = self
+                    .iroh
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("IrohOnly 模式但未配置 IrohTransport"))?;
-                self.connect_with(iroh.as_ref(), node_id, addrs, reachability, nat_type, true).await
+                self.connect_with(iroh.as_ref(), node_id, addrs, reachability, nat_type, true)
+                    .await
             }
             TransportMode::Auto => {
                 // 并行尝试 Iroh 和 TCP，哪个先成功用哪个
@@ -152,7 +165,8 @@ impl Transport for TransportRouter {
                             reachability,
                             nat_type.clone(),
                             true,
-                        ).await
+                        )
+                        .await
                     } else {
                         Err(anyhow::anyhow!("IrohTransport 未配置"))
                     }
@@ -167,7 +181,8 @@ impl Transport for TransportRouter {
                             reachability,
                             nat_type.clone(),
                             false,
-                        ).await
+                        )
+                        .await
                     } else {
                         Err(anyhow::anyhow!("TcpTransport 未配置"))
                     }
@@ -181,7 +196,10 @@ impl Transport for TransportRouter {
 
                 match first_result {
                     Ok(r) => {
-                        debug!("[transport-router] {} 连接先成功", if iroh_first { "Iroh" } else { "TCP" });
+                        debug!(
+                            "[transport-router] {} 连接先成功",
+                            if iroh_first { "Iroh" } else { "TCP" }
+                        );
                         Ok(r)
                     }
                     Err(e) => {
@@ -189,14 +207,30 @@ impl Transport for TransportRouter {
                         if iroh_first {
                             debug!("[transport-router] Iroh 失败({})，回退 TCP", e);
                             if let Some(ref tcp) = self.tcp {
-                                self.connect_with(tcp.as_ref(), node_id, addrs, reachability, nat_type, false).await
+                                self.connect_with(
+                                    tcp.as_ref(),
+                                    node_id,
+                                    addrs,
+                                    reachability,
+                                    nat_type,
+                                    false,
+                                )
+                                .await
                             } else {
                                 Err(anyhow::anyhow!("TcpTransport 未配置"))
                             }
                         } else {
                             debug!("[transport-router] TCP 失败({})，回退 Iroh", e);
                             if let Some(ref iroh) = self.iroh {
-                                self.connect_with(iroh.as_ref(), node_id, addrs, reachability, nat_type, true).await
+                                self.connect_with(
+                                    iroh.as_ref(),
+                                    node_id,
+                                    addrs,
+                                    reachability,
+                                    nat_type,
+                                    true,
+                                )
+                                .await
                             } else {
                                 Err(anyhow::anyhow!("IrohTransport 未配置"))
                             }

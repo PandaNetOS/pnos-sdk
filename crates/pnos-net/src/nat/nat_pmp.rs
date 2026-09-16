@@ -160,7 +160,10 @@ impl NatPmpClient {
 
         // 验证 opcode 高位置 1（响应标志）
         if opcode != 0x80 | OP_EXTERNAL_ADDRESS {
-            return Err(anyhow::anyhow!("NAT-PMP 响应 opcode 不匹配: 0x{:02x}", opcode));
+            return Err(anyhow::anyhow!(
+                "NAT-PMP 响应 opcode 不匹配: 0x{:02x}",
+                opcode
+            ));
         }
 
         Ok(ExternalAddressResponse {
@@ -262,7 +265,12 @@ impl NatPmpClient {
     }
 
     /// 删除端口映射（lifetime=0）
-    pub fn unmap_port(&self, protocol: u8, internal_port: u16, external_port: u16) -> anyhow::Result<()> {
+    pub fn unmap_port(
+        &self,
+        protocol: u8,
+        internal_port: u16,
+        external_port: u16,
+    ) -> anyhow::Result<()> {
         let resp = self.map_port(protocol, internal_port, external_port, 0)?;
         if resp.result_code.is_success() {
             Ok(())
@@ -330,9 +338,7 @@ fn detect_default_gateway_windows() -> Option<Ipv4Addr> {
     }
 
     // 方法2: 通过 ipconfig 解析
-    let output = std::process::Command::new("ipconfig")
-        .output()
-        .ok()?;
+    let output = std::process::Command::new("ipconfig").output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     let mut current_adapter_has_dhcp = false;

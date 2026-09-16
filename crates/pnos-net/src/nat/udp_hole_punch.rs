@@ -136,15 +136,21 @@ impl HolePunchStats {
         self.total_attempts += 1;
         if result.success {
             self.success_count += 1;
-            *self.nat_type_success.entry(result.nat_type.clone()).or_insert(0) += 1;
+            *self
+                .nat_type_success
+                .entry(result.nat_type.clone())
+                .or_insert(0) += 1;
         } else {
             self.failure_count += 1;
-            *self.nat_type_failure.entry(result.nat_type.clone()).or_insert(0) += 1;
+            *self
+                .nat_type_failure
+                .entry(result.nat_type.clone())
+                .or_insert(0) += 1;
         }
         // 更新平均耗时（滑动平均）
-        self.avg_duration_ms =
-            (self.avg_duration_ms * (self.total_attempts - 1) as f64 + result.duration_ms as f64)
-                / self.total_attempts as f64;
+        self.avg_duration_ms = (self.avg_duration_ms * (self.total_attempts - 1) as f64
+            + result.duration_ms as f64)
+            / self.total_attempts as f64;
     }
 }
 
@@ -207,11 +213,7 @@ impl HolePuncher {
         let local_str = format!("{}", local_addr);
 
         for stun_server in &self.config.stun_servers {
-            match stun_binding_request(
-                stun_server,
-                &local_str,
-                Duration::from_millis(2000),
-            ) {
+            match stun_binding_request(stun_server, &local_str, Duration::from_millis(2000)) {
                 Ok(result) if result.success => {
                     if let Some(mapped) = result.mapped_addr {
                         info!(
@@ -272,7 +274,9 @@ impl HolePuncher {
             retries: 0,
             success: false,
         };
-        self.active_sessions.write().insert(peer_id.to_string(), session);
+        self.active_sessions
+            .write()
+            .insert(peer_id.to_string(), session);
 
         info!(
             "[udp-hole-punch] 开始打洞: peer={}, addr={}, nat_type={:?}",
@@ -322,16 +326,13 @@ impl HolePuncher {
                     break;
                 }
                 Err(e) => {
-                    debug!(
-                        "[udp-hole-punch] 打洞第 {} 次失败: {}",
-                        retry + 1,
-                        e
-                    );
+                    debug!("[udp-hole-punch] 打洞第 {} 次失败: {}", retry + 1, e);
                     if retry == self.config.max_retries - 1 {
                         result.error = Some(format!("{}", e));
                     }
                     // 重试前等待
-                    tokio::time::sleep(Duration::from_millis(self.config.punch_interval_ms * 2)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.punch_interval_ms * 2))
+                        .await;
                 }
             }
         }
@@ -357,7 +358,11 @@ impl HolePuncher {
     }
 
     /// 执行一次打洞
-    async fn punch_once(&self, peer_addr: SocketAddr, nat_type: NatType) -> anyhow::Result<SocketAddr> {
+    async fn punch_once(
+        &self,
+        peer_addr: SocketAddr,
+        nat_type: NatType,
+    ) -> anyhow::Result<SocketAddr> {
         let punch_data = b"PDC_HOLE_PUNCH";
         let timeout = Duration::from_millis(self.config.punch_timeout_ms);
 

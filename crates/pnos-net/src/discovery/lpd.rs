@@ -144,7 +144,10 @@ impl LpdDiscoveryService {
             })() {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!("[net-lpd] 绑定多播端口 {} 失败，LPD 未启动: {}", self.multicast_port, e);
+                    warn!(
+                        "[net-lpd] 绑定多播端口 {} 失败，LPD 未启动: {}",
+                        self.multicast_port, e
+                    );
                     return;
                 }
             };
@@ -158,7 +161,10 @@ impl LpdDiscoveryService {
 
             // 2. 加入多播组
             if let Err(e) = socket.join_multicast_v4(self.multicast_addr, Ipv4Addr::UNSPECIFIED) {
-                warn!("[net-lpd] 加入多播组 {} 失败，LPD 未启动: {}", self.multicast_addr, e);
+                warn!(
+                    "[net-lpd] 加入多播组 {} 失败，LPD 未启动: {}",
+                    self.multicast_addr, e
+                );
                 return;
             }
             let _ = socket.set_multicast_loop_v4(true);
@@ -175,9 +181,13 @@ impl LpdDiscoveryService {
             );
 
             // 3. 多播目的地址
-            let dst = SocketAddr::new(std::net::IpAddr::V4(self.multicast_addr), self.multicast_port);
+            let dst = SocketAddr::new(
+                std::net::IpAddr::V4(self.multicast_addr),
+                self.multicast_port,
+            );
 
-            let mut ticker = tokio::time::interval(Duration::from_secs(self.broadcast_interval_secs));
+            let mut ticker =
+                tokio::time::interval(Duration::from_secs(self.broadcast_interval_secs));
             let mut buf = vec![0u8; 2048];
 
             // 4. 主循环
@@ -220,11 +230,7 @@ impl LpdDiscoveryService {
         };
         let wire = msg.to_wire()?;
         let sent = socket.send_to(&wire, dst).await?;
-        trace!(
-            "[net-lpd] 已广播 announce，{} 字节 -> {}",
-            sent,
-            dst
-        );
+        trace!("[net-lpd] 已广播 announce，{} 字节 -> {}", sent, dst);
         Ok(())
     }
 
@@ -391,14 +397,8 @@ mod tests {
     fn test_process_remote_node() {
         let (shutdown_tx, _rx) = broadcast::channel(1);
         let (discovered_tx, mut discovered_rx) = broadcast::channel(32);
-        let svc = LpdDiscoveryService::new(
-            [0xAA; 20],
-            6885,
-            6880,
-            6771,
-            discovered_tx,
-            shutdown_tx,
-        );
+        let svc =
+            LpdDiscoveryService::new([0xAA; 20], 6885, 6880, 6771, discovered_tx, shutdown_tx);
 
         let mut remote_id = [0u8; 20];
         remote_id.copy_from_slice(b"REMOTE_NODE_ID_12345");
@@ -412,7 +412,10 @@ mod tests {
         let discovered = discovered_rx.try_recv().expect("应收到发现事件");
         assert_eq!(discovered.node_id, NodeId(remote_id));
         assert_eq!(discovered.addresses.len(), 1);
-        assert_eq!(discovered.addresses[0], "192.168.1.200:6885".parse().unwrap());
+        assert_eq!(
+            discovered.addresses[0],
+            "192.168.1.200:6885".parse().unwrap()
+        );
         assert_eq!(discovered.source, DiscoverySource::Lpd);
 
         // 无效魔数报文不应产生事件

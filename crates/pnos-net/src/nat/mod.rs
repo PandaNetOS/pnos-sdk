@@ -86,7 +86,13 @@ impl GatewayBackend {
     ) -> anyhow::Result<()> {
         match self {
             GatewayBackend::Upnp(g) => g
-                .add_port(protocol, external_port, local_addr, lease_duration, description)
+                .add_port(
+                    protocol,
+                    external_port,
+                    local_addr,
+                    lease_duration,
+                    description,
+                )
                 .map_err(|e| anyhow::anyhow!("{}", e)),
         }
     }
@@ -398,7 +404,10 @@ impl NatManager {
             {
                 Ok(ext_port) => {
                     success_count += 1;
-                    info!("[nat] TCP {} → 外部 {} 映射成功（中继）", relay_port, ext_port);
+                    info!(
+                        "[nat] TCP {} → 外部 {} 映射成功（中继）",
+                        relay_port, ext_port
+                    );
                     self.mappings.write().push(NatMapping {
                         protocol: "TCP".to_string(),
                         internal_port: relay_port,
@@ -424,7 +433,10 @@ impl NatManager {
             {
                 Ok(ext_port) => {
                     success_count += 1;
-                    info!("[nat] UDP {} → 外部 {} 映射成功（中继）", relay_port, ext_port);
+                    info!(
+                        "[nat] UDP {} → 外部 {} 映射成功（中继）",
+                        relay_port, ext_port
+                    );
                     self.mappings.write().push(NatMapping {
                         protocol: "UDP".to_string(),
                         internal_port: relay_port,
@@ -482,7 +494,10 @@ impl NatManager {
             {
                 Ok(ext_port) => {
                     success_count += 1;
-                    info!("[nat] TCP {} → 外部 {} 映射成功（TCP-PEX）", tcp_pex_port, ext_port);
+                    info!(
+                        "[nat] TCP {} → 外部 {} 映射成功（TCP-PEX）",
+                        tcp_pex_port, ext_port
+                    );
                     self.mappings.write().push(NatMapping {
                         protocol: "TCP".to_string(),
                         internal_port: tcp_pex_port,
@@ -498,7 +513,6 @@ impl NatManager {
             }
         }
 
-
         // 4.8 联邦网络端口（TCP + UDP）
         if federation_port > 0 {
             // 联邦 TCP
@@ -513,7 +527,10 @@ impl NatManager {
             {
                 Ok(ext_port) => {
                     success_count += 1;
-                    info!("[nat] TCP {} → 外部 {} 映射成功（联邦）", federation_port, ext_port);
+                    info!(
+                        "[nat] TCP {} → 外部 {} 映射成功（联邦）",
+                        federation_port, ext_port
+                    );
                     self.mappings.write().push(NatMapping {
                         protocol: "TCP".to_string(),
                         internal_port: federation_port,
@@ -539,7 +556,10 @@ impl NatManager {
             {
                 Ok(ext_port) => {
                     success_count += 1;
-                    info!("[nat] UDP {} → 外部 {} 映射成功（联邦）", federation_port, ext_port);
+                    info!(
+                        "[nat] UDP {} → 外部 {} 映射成功（联邦）",
+                        federation_port, ext_port
+                    );
                     self.mappings.write().push(NatMapping {
                         protocol: "UDP".to_string(),
                         internal_port: federation_port,
@@ -569,11 +589,21 @@ impl NatManager {
             success_count,
             {
                 let mut total = 2; // HTTP TCP + UDP Tracker
-                if crawler_port > 0 { total += 1; }
-                if relay_port > 0 { total += 2; } // TCP + UDP
-                if utp_port > 0 { total += 1; }
-                if tcp_pex_port > 0 { total += 1; }
-                if federation_port > 0 { total += 2; } // TCP + UDP
+                if crawler_port > 0 {
+                    total += 1;
+                }
+                if relay_port > 0 {
+                    total += 2;
+                } // TCP + UDP
+                if utp_port > 0 {
+                    total += 1;
+                }
+                if tcp_pex_port > 0 {
+                    total += 1;
+                }
+                if federation_port > 0 {
+                    total += 2;
+                } // TCP + UDP
                 total
             },
             verified_count
@@ -666,10 +696,7 @@ impl NatManager {
         tokio::task::spawn_blocking(move || {
             let options = igd::SearchOptions {
                 timeout: Some(Duration::from_secs(15)),
-                bind_addr: std::net::SocketAddr::new(
-                    std::net::IpAddr::V4(local_ip),
-                    0,
-                ),
+                bind_addr: std::net::SocketAddr::new(std::net::IpAddr::V4(local_ip), 0),
                 ..Default::default()
             };
             igd::search_gateway(options)

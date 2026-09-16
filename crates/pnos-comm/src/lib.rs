@@ -510,7 +510,10 @@ impl PnosAppBuilder {
                     );
                     // 连续失败 6 次（约 90s）→ 触发自动重注册
                     if consecutive_failures >= 6 {
-                        warn!("心跳连续失败 {} 次，触发自动重注册...", consecutive_failures);
+                        warn!(
+                            "心跳连续失败 {} 次，触发自动重注册...",
+                            consecutive_failures
+                        );
                         match runtime_clone
                             .register_with_retry(
                                 &register_req_clone,

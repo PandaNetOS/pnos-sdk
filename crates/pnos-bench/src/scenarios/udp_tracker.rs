@@ -46,8 +46,20 @@ pub struct UdpTrackerScenario {
 impl Default for UdpTrackerScenario {
     fn default() -> Self {
         let mut rng = StdRng::from_entropy();
-        let infohashes: Vec<[u8; 20]> = (0..1000).map(|_| { let mut h = [0u8; 20]; rng.fill(&mut h); h }).collect();
-        let peer_ids: Vec<[u8; 20]> = (0..1000).map(|_| { let mut h = [0u8; 20]; rng.fill(&mut h); h }).collect();
+        let infohashes: Vec<[u8; 20]> = (0..1000)
+            .map(|_| {
+                let mut h = [0u8; 20];
+                rng.fill(&mut h);
+                h
+            })
+            .collect();
+        let peer_ids: Vec<[u8; 20]> = (0..1000)
+            .map(|_| {
+                let mut h = [0u8; 20];
+                rng.fill(&mut h);
+                h
+            })
+            .collect();
         let tx_ids: Vec<u32> = (0..65536).map(|_| rng.gen()).collect();
         let keys: Vec<u32> = (0..65536).map(|_| rng.gen()).collect();
 
@@ -76,7 +88,11 @@ impl UdpTrackerScenario {
     }
 
     /// 发送 connect 请求
-    async fn udp_connect(socket: &UdpSocket, target: SocketAddr, tx_id: u32) -> anyhow::Result<u64> {
+    async fn udp_connect(
+        socket: &UdpSocket,
+        target: SocketAddr,
+        tx_id: u32,
+    ) -> anyhow::Result<u64> {
         let mut buf = [0u8; 16];
         buf[0..8].copy_from_slice(&PROTOCOL_ID.to_be_bytes());
         buf[8..12].copy_from_slice(&ACTION_CONNECT.to_be_bytes());
@@ -84,8 +100,11 @@ impl UdpTrackerScenario {
         socket.send_to(&buf, target).await?;
 
         let mut recv_buf = [0u8; 16];
-        let (len, _) = tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut recv_buf)).await??;
-        if len < 16 { return Err(anyhow::anyhow!("connect 响应太短")); }
+        let (len, _) =
+            tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut recv_buf)).await??;
+        if len < 16 {
+            return Err(anyhow::anyhow!("connect 响应太短"));
+        }
         Ok(u64::from_be_bytes(recv_buf[8..16].try_into().unwrap()))
     }
 
@@ -114,10 +133,15 @@ impl UdpTrackerScenario {
         socket.send_to(&buf, target).await?;
 
         let mut recv_buf = [0u8; 1024];
-        let (len, _) = tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut recv_buf)).await??;
-        if len < 20 { return Err(anyhow::anyhow!("announce 响应太短: {}", len)); }
+        let (len, _) =
+            tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut recv_buf)).await??;
+        if len < 20 {
+            return Err(anyhow::anyhow!("announce 响应太短: {}", len));
+        }
         let action = u32::from_be_bytes(recv_buf[0..4].try_into().unwrap());
-        if action != ACTION_ANNOUNCE { return Err(anyhow::anyhow!("announce action 不匹配: {}", action)); }
+        if action != ACTION_ANNOUNCE {
+            return Err(anyhow::anyhow!("announce action 不匹配: {}", action));
+        }
         Ok(())
     }
 
@@ -140,23 +164,37 @@ impl UdpTrackerScenario {
         socket.send_to(&buf, target).await?;
 
         let mut recv_buf = [0u8; 1024];
-        let (len, _) = tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut recv_buf)).await??;
-        if len < 8 { return Err(anyhow::anyhow!("scrape 响应太短")); }
+        let (len, _) =
+            tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut recv_buf)).await??;
+        if len < 8 {
+            return Err(anyhow::anyhow!("scrape 响应太短"));
+        }
         let action = u32::from_be_bytes(recv_buf[0..4].try_into().unwrap());
-        if action != ACTION_SCRAPE { return Err(anyhow::anyhow!("scrape action 不匹配: {}", action)); }
+        if action != ACTION_SCRAPE {
+            return Err(anyhow::anyhow!("scrape action 不匹配: {}", action));
+        }
         Ok(())
     }
 }
 
 #[async_trait]
 impl Scenario for UdpTrackerScenario {
-    fn name(&self) -> &str { "udp_tracker" }
+    fn name(&self) -> &str {
+        "udp_tracker"
+    }
 
-    fn description(&self) -> &str { "PDC 超级 Tracker UDP 压测（BEP15，Socket池复用）" }
+    fn description(&self) -> &str {
+        "PDC 超级 Tracker UDP 压测（BEP15，Socket池复用）"
+    }
 
     async fn setup(&self, ctx: &BenchContext) -> anyhow::Result<()> {
-        let target: SocketAddr = ctx.args.get("target")
-            .map(|s| s.parse().unwrap_or_else(|_| "127.0.0.1:6880".parse().unwrap()))
+        let target: SocketAddr = ctx
+            .args
+            .get("target")
+            .map(|s| {
+                s.parse()
+                    .unwrap_or_else(|_| "127.0.0.1:6880".parse().unwrap())
+            })
             .unwrap_or_else(|| "127.0.0.1:6880".parse().unwrap());
         let _ = self.target.set(target);
 
@@ -186,8 +224,14 @@ impl Scenario for UdpTrackerScenario {
     }
 
     async fn request(&self, ctx: &BenchContext) -> anyhow::Result<()> {
-        let target = *self.target.get().ok_or_else(|| anyhow::anyhow!("target 未初始化"))?;
-        let pool = self.socket_pool.get().ok_or_else(|| anyhow::anyhow!("Socket 池未初始化"))?;
+        let target = *self
+            .target
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("target 未初始化"))?;
+        let pool = self
+            .socket_pool
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("Socket 池未初始化"))?;
 
         let idx = self.socket_idx.fetch_add(1, Ordering::Relaxed) % pool.len();
         let socket = &pool[idx];
@@ -195,7 +239,9 @@ impl Scenario for UdpTrackerScenario {
         // 获取 connection_id（std Mutex，无 await）
         let connection_id = {
             let conns = self.connections.lock().unwrap();
-            if conns.is_empty() { None } else {
+            if conns.is_empty() {
+                None
+            } else {
                 let idx = ctx.next_request_id() as usize % conns.len();
                 Some(conns[idx])
             }
@@ -210,13 +256,19 @@ impl Scenario for UdpTrackerScenario {
             }
         };
 
-        let mode = ctx.args.get("mode").map(|s| s.as_str()).unwrap_or("announce");
+        let mode = ctx
+            .args
+            .get("mode")
+            .map(|s| s.as_str())
+            .unwrap_or("announce");
         let tx_id = self.next_tx_id();
 
         let do_announce = match mode {
             "announce" => true,
             "scrape" => false,
-            "mixed" => (self.tx_ids[self.tx_idx.load(Ordering::Relaxed) % self.tx_ids.len()] % 10) < 8,
+            "mixed" => {
+                (self.tx_ids[self.tx_idx.load(Ordering::Relaxed) % self.tx_ids.len()] % 10) < 8
+            }
             _ => true,
         };
 

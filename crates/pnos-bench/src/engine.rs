@@ -61,9 +61,7 @@ impl BenchEngine {
 
     /// 执行压测
     pub async fn run(&self) -> anyhow::Result<crate::metrics::BenchResult> {
-        info!(
-            "=== 开始压测 ==="
-        );
+        info!("=== 开始压测 ===");
         info!("场景: {}", self.scenario.name());
         info!("目标: {}", self.config.target);
         info!("目标 QPS: {}", self.config.qps);
@@ -99,8 +97,16 @@ impl BenchEngine {
                 let elapsed = start.elapsed();
                 let delta = total - last_total;
                 let delta_time = last_time.elapsed().as_secs_f64();
-                let current_qps = if delta_time > 0.0 { delta as f64 / delta_time } else { 0.0 };
-                let success_rate = if total > 0 { success as f64 / total as f64 * 100.0 } else { 100.0 };
+                let current_qps = if delta_time > 0.0 {
+                    delta as f64 / delta_time
+                } else {
+                    0.0
+                };
+                let success_rate = if total > 0 {
+                    success as f64 / total as f64 * 100.0
+                } else {
+                    100.0
+                };
 
                 info!(
                     "[进度] 已运行 {:>6.1}s | 总请求 {:>10} | 当前QPS {:>8.0} | 成功率 {:>5.1}% | 失败 {} 超时 {}",

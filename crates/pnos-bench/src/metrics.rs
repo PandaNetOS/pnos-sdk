@@ -126,9 +126,10 @@ impl MetricsCollector {
 
     /// 克隆 histogram 数据
     pub fn histogram_snapshot(&self) -> Histogram<u64> {
-        self.histogram.lock().map(|h| h.clone()).unwrap_or_else(|_| {
-            Histogram::new_with_bounds(1, 10_000_000, 3).unwrap()
-        })
+        self.histogram
+            .lock()
+            .map(|h| h.clone())
+            .unwrap_or_else(|_| Histogram::new_with_bounds(1, 10_000_000, 3).unwrap())
     }
 
     pub fn into_result(
@@ -155,9 +156,10 @@ impl MetricsCollector {
             timeout_count: self.timeout_count.load(Ordering::Relaxed),
             actual_qps,
             target_qps,
-            latency_histogram: self.histogram.into_inner().unwrap_or_else(|_| {
-                Histogram::new_with_bounds(1, 10_000_000, 3).unwrap()
-            }),
+            latency_histogram: self
+                .histogram
+                .into_inner()
+                .unwrap_or_else(|_| Histogram::new_with_bounds(1, 10_000_000, 3).unwrap()),
         }
     }
 }

@@ -41,10 +41,7 @@ impl PeerCache {
         match std::fs::read_to_string(&path) {
             Ok(content) => match serde_json::from_str::<PeerCache>(&content) {
                 Ok(cache) => {
-                    tracing::debug!(
-                        "[net] 节点缓存加载成功，共 {} 个节点",
-                        cache.nodes.len()
-                    );
+                    tracing::debug!("[net] 节点缓存加载成功，共 {} 个节点", cache.nodes.len());
                     cache
                 }
                 Err(e) => {
@@ -72,10 +69,7 @@ impl PeerCache {
         std::fs::write(&tmp_path, json)?;
         std::fs::rename(&tmp_path, &path)?;
 
-        tracing::debug!(
-            "[net] 节点缓存已保存，共 {} 个节点",
-            self.nodes.len()
-        );
+        tracing::debug!("[net] 节点缓存已保存，共 {} 个节点", self.nodes.len());
         Ok(())
     }
 
@@ -111,7 +105,8 @@ impl PeerCache {
         self.nodes
             .retain(|n| now.saturating_sub(n.last_seen) < seven_days && n.success_count > 0);
 
-        self.nodes.sort_by(|a, b| b.success_count.cmp(&a.success_count));
+        self.nodes
+            .sort_by(|a, b| b.success_count.cmp(&a.success_count));
         self.nodes.truncate(max_nodes);
     }
 
@@ -228,7 +223,8 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_returns_empty() {
-        let dir = std::env::temp_dir().join(format!("pnos_net_cache_nonexist_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pnos_net_cache_nonexist_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

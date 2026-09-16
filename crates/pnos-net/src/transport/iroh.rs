@@ -164,19 +164,13 @@ impl AsyncWrite for IrohStream {
             buf,
         )
     }
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         <iroh::endpoint::SendStream as tokio::io::AsyncWrite>::poll_flush(
             Pin::new(&mut self.send),
             cx,
         )
     }
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         <iroh::endpoint::SendStream as tokio::io::AsyncWrite>::poll_shutdown(
             Pin::new(&mut self.send),
             cx,
@@ -290,11 +284,7 @@ impl Transport for IrohTransport {
         );
 
         Ok(TransportConnectResult {
-            stream: Box::new(IrohStream {
-                recv,
-                send,
-                kind,
-            }),
+            stream: Box::new(IrohStream { recv, send, kind }),
             connected_addr: addrs.first().copied(),
             latency,
             kind,

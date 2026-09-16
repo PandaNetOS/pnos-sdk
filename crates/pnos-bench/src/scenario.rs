@@ -90,7 +90,9 @@ pub struct ScenarioRegistry {
 
 impl ScenarioRegistry {
     pub fn new() -> Self {
-        Self { scenarios: Vec::new() }
+        Self {
+            scenarios: Vec::new(),
+        }
     }
 
     pub fn register(&mut self, scenario: Arc<dyn Scenario>) {

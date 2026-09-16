@@ -117,7 +117,10 @@ impl ProviderRegistry {
             .unwrap_or(self.providers.len());
         self.providers.insert(pos, provider);
 
-        debug!("[nat-provider] 已注册 {} (priority={}, 位置={})", name, priority, pos);
+        debug!(
+            "[nat-provider] 已注册 {} (priority={}, 位置={})",
+            name, priority, pos
+        );
     }
 
     /// 注销 provider
@@ -158,7 +161,10 @@ impl ProviderRegistry {
 
     /// 获取所有 provider 名称
     pub fn names(&self) -> Vec<String> {
-        self.providers.iter().map(|p| p.name().to_string()).collect()
+        self.providers
+            .iter()
+            .map(|p| p.name().to_string())
+            .collect()
     }
 }
 
@@ -255,13 +261,7 @@ mod tests {
     #[test]
     fn test_mapping_operation_stats() {
         let start = Instant::now();
-        let stats = MappingOperationStats::success(
-            NatProtocol::Upnp,
-            6880,
-            6880,
-            start,
-            0,
-        );
+        let stats = MappingOperationStats::success(NatProtocol::Upnp, 6880, 6880, start, 0);
         assert!(stats.success);
         assert_eq!(stats.internal_port, 6880);
         assert_eq!(stats.external_port, 6880);

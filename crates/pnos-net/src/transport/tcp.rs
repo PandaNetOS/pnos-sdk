@@ -21,7 +21,10 @@ pub struct TcpTransportStream {
 
 impl TcpTransportStream {
     pub fn new(stream: tokio::net::TcpStream, kind: TransportKind) -> Self {
-        Self { inner: stream, kind }
+        Self {
+            inner: stream,
+            kind,
+        }
     }
     pub fn into_inner(self) -> tokio::net::TcpStream {
         self.inner

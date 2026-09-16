@@ -66,7 +66,12 @@ pub struct MqttDiscoveryMessage {
 }
 
 impl MqttDiscoveryMessage {
-    pub fn new(node_id: [u8; 20], addresses: Vec<SocketAddr>, api_port: u16, federation_port: u16) -> Self {
+    pub fn new(
+        node_id: [u8; 20],
+        addresses: Vec<SocketAddr>,
+        api_port: u16,
+        federation_port: u16,
+    ) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -179,14 +184,17 @@ impl MqttDiscoveryService {
                 let mut retries = 0;
                 loop {
                     match self_clone.connect_and_run(&host, port).await {
-                        Ok(()) => break,  // 正常关闭
+                        Ok(()) => break, // 正常关闭
                         Err(e) => {
                             retries += 1;
                             if retries >= 3 {
                                 warn!("[net-mqtt] broker {}:{} 连续失败3次，停止重试", host, port);
                                 break;
                             }
-                            warn!("[net-mqtt] broker {}:{} 连接失败({}/3)，5秒后重试: {}", host, port, retries, e);
+                            warn!(
+                                "[net-mqtt] broker {}:{} 连接失败({}/3)，5秒后重试: {}",
+                                host, port, retries, e
+                            );
                             tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                     }
@@ -208,7 +216,10 @@ impl MqttDiscoveryService {
                     ip
                 }
                 Err(e) => {
-                    debug!("[net-mqtt] DnsPool 解析 {} 失败（{}），回退系统 DNS", host, e);
+                    debug!(
+                        "[net-mqtt] DnsPool 解析 {} 失败（{}），回退系统 DNS",
+                        host, e
+                    );
                     host.to_string()
                 }
                 Ok(_) => host.to_string(),
@@ -227,7 +238,9 @@ impl MqttDiscoveryService {
         info!("[net-mqtt] 正在连接 broker {}:{} ...", host, port);
 
         // Subscribe
-        client.subscribe(MQTT_DISCOVERY_TOPIC, QoS::AtMostOnce).await?;
+        client
+            .subscribe(MQTT_DISCOVERY_TOPIC, QoS::AtMostOnce)
+            .await?;
 
         // Publish 自己的地址（retained，新节点连上立即收到）
         let msg = MqttDiscoveryMessage::new(
@@ -237,7 +250,9 @@ impl MqttDiscoveryService {
             self.federation_port,
         );
         let payload = msg.to_json()?;
-        client.publish(MQTT_DISCOVERY_TOPIC, QoS::AtMostOnce, true, payload).await?;
+        client
+            .publish(MQTT_DISCOVERY_TOPIC, QoS::AtMostOnce, true, payload)
+            .await?;
 
         info!(
             "[net-mqtt] MQTT 发现已启动: broker={}:{}, topic={}, 心跳={}s, 地址={:?}",
@@ -291,12 +306,7 @@ impl MqttDiscoveryService {
     }
 
     /// 处理 MQTT 通知
-    fn handle_notification(
-        &self,
-        notification: rumqttc::Event,
-        my_node_id_hex: &str,
-    ) {
-
+    fn handle_notification(&self, notification: rumqttc::Event, my_node_id_hex: &str) {
         if let rumqttc::Event::Incoming(packet) = notification {
             if let rumqttc::Packet::Publish(publish) = packet {
                 // 解析消息

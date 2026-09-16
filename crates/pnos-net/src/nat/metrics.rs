@@ -198,10 +198,10 @@ impl NatMetricsExt {
             entry.mapping_failure += 1;
         }
         // 更新平均延迟（简单滑动平均）
-        entry.avg_mapping_latency_ms =
-            (entry.avg_mapping_latency_ms * (entry.mapping_success + entry.mapping_failure - 1) as f64
-                + stats.duration_ms as f64)
-                / (entry.mapping_success + entry.mapping_failure) as f64;
+        entry.avg_mapping_latency_ms = (entry.avg_mapping_latency_ms
+            * (entry.mapping_success + entry.mapping_failure - 1) as f64
+            + stats.duration_ms as f64)
+            / (entry.mapping_success + entry.mapping_failure) as f64;
 
         // 更新全局延迟统计
         self.mapping_latency.write().record(stats.duration_ms);
@@ -312,7 +312,8 @@ impl NatMetricsExt {
         let total_success_rate = if total_mapping_success + total_mapping_failure == 0 {
             0.0
         } else {
-            total_mapping_success as f64 / (total_mapping_success + total_mapping_failure) as f64 * 100.0
+            total_mapping_success as f64 / (total_mapping_success + total_mapping_failure) as f64
+                * 100.0
         };
 
         NatMetricsSummary {

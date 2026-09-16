@@ -230,7 +230,12 @@ impl PcpClient {
     }
 
     /// 删除端口映射（lifetime=0）
-    pub fn unmap_port(&self, protocol: u8, internal_port: u16, external_port: u16) -> anyhow::Result<()> {
+    pub fn unmap_port(
+        &self,
+        protocol: u8,
+        internal_port: u16,
+        external_port: u16,
+    ) -> anyhow::Result<()> {
         let resp = self.map_port(protocol, internal_port, external_port, 0)?;
         if resp.result_code.is_success() {
             Ok(())
@@ -305,7 +310,11 @@ impl PcpClient {
 
         // 验证版本和 opcode
         if version != PCP_VERSION {
-            return Err(anyhow::anyhow!("PCP 版本不匹配: 期望 {}, 实际 {}", PCP_VERSION, version));
+            return Err(anyhow::anyhow!(
+                "PCP 版本不匹配: 期望 {}, 实际 {}",
+                PCP_VERSION,
+                version
+            ));
         }
         let expected_opcode = PCP_RESPONSE_FLAG | opcode;
         if resp_opcode != expected_opcode {
@@ -421,6 +430,9 @@ mod tests {
         assert_eq!(header.len(), 24);
         assert_eq!(header[0], PCP_VERSION);
         assert_eq!(header[1], OP_MAP);
-        assert_eq!(u32::from_be_bytes([header[4], header[5], header[6], header[7]]), 3600);
+        assert_eq!(
+            u32::from_be_bytes([header[4], header[5], header[6], header[7]]),
+            3600
+        );
     }
 }

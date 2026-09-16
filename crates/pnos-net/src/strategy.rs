@@ -130,14 +130,10 @@ impl ConnectStrategy {
             Ok(conn) => {
                 info!(
                     "[net-strategy] TCP 直连成功: {} (耗时 {:?})",
-                    conn.connected_addr,
-                    conn.latency
+                    conn.connected_addr, conn.latency
                 );
                 return Ok(ConnectResult {
-                    connection: Box::new(TcpTransportStream::new(
-                        conn.stream,
-                        TransportKind::Tcp,
-                    )),
+                    connection: Box::new(TcpTransportStream::new(conn.stream, TransportKind::Tcp)),
                     method: ConnectMethod::TcpDirect,
                     total_latency: start.elapsed(),
                 });
@@ -153,7 +149,7 @@ impl ConnectStrategy {
                 Reachability::HolePunchable => true,
                 Reachability::OutboundOnly => false, // 对端只能出站，打洞也没用
                 Reachability::Unknown => true,       // 未知，尝试一下
-                _ => false,                           // 公网/映射应该直连成功，不打洞
+                _ => false,                          // 公网/映射应该直连成功，不打洞
             };
 
             if can_hole_punch {

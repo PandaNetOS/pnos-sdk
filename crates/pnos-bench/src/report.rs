@@ -44,17 +44,49 @@ fn print_text_report(r: &BenchResult) {
     println!("  达成率:     {:>11.1}%", qps_achievement);
     println!();
     println!("【成功率】");
-    println!("  成功:       {:>12} ({:.2}%)", r.success_count, r.success_rate());
-    println!("  失败:       {:>12} ({:.2}%)", r.failure_count, r.failure_rate());
+    println!(
+        "  成功:       {:>12} ({:.2}%)",
+        r.success_count,
+        r.success_rate()
+    );
+    println!(
+        "  失败:       {:>12} ({:.2}%)",
+        r.failure_count,
+        r.failure_rate()
+    );
     println!("  超时:       {:>12}", r.timeout_count);
     println!();
     println!("【延迟分布】");
-    println!("  P50:        {:>10} μs ({:.2} ms)", r.latency_p50(), r.latency_p50() as f64 / 1000.0);
-    println!("  P90:        {:>10} μs ({:.2} ms)", r.latency_p90(), r.latency_p90() as f64 / 1000.0);
-    println!("  P99:        {:>10} μs ({:.2} ms)", r.latency_p99(), r.latency_p99() as f64 / 1000.0);
-    println!("  P999:       {:>10} μs ({:.2} ms)", r.latency_p999(), r.latency_p999() as f64 / 1000.0);
-    println!("  Max:        {:>10} μs ({:.2} ms)", r.latency_max(), r.latency_max() as f64 / 1000.0);
-    println!("  Avg:        {:>10.0} μs ({:.2} ms)", r.latency_avg(), r.latency_avg() / 1000.0);
+    println!(
+        "  P50:        {:>10} μs ({:.2} ms)",
+        r.latency_p50(),
+        r.latency_p50() as f64 / 1000.0
+    );
+    println!(
+        "  P90:        {:>10} μs ({:.2} ms)",
+        r.latency_p90(),
+        r.latency_p90() as f64 / 1000.0
+    );
+    println!(
+        "  P99:        {:>10} μs ({:.2} ms)",
+        r.latency_p99(),
+        r.latency_p99() as f64 / 1000.0
+    );
+    println!(
+        "  P999:       {:>10} μs ({:.2} ms)",
+        r.latency_p999(),
+        r.latency_p999() as f64 / 1000.0
+    );
+    println!(
+        "  Max:        {:>10} μs ({:.2} ms)",
+        r.latency_max(),
+        r.latency_max() as f64 / 1000.0
+    );
+    println!(
+        "  Avg:        {:>10.0} μs ({:.2} ms)",
+        r.latency_avg(),
+        r.latency_avg() / 1000.0
+    );
     println!();
     println!("【结论】");
     if r.latency_p99() < 100 {
@@ -69,9 +101,15 @@ fn print_text_report(r: &BenchResult) {
         if qps_achievement >= 95.0 {
             println!("  ✅ QPS 达标 ({:.0}/{})", r.actual_qps, r.target_qps);
         } else if qps_achievement >= 80.0 {
-            println!("  ⚠️  QPS 接近达标 ({:.0}/{}, {:.1}%)", r.actual_qps, r.target_qps, qps_achievement);
+            println!(
+                "  ⚠️  QPS 接近达标 ({:.0}/{}, {:.1}%)",
+                r.actual_qps, r.target_qps, qps_achievement
+            );
         } else {
-            println!("  ❌ QPS 未达标 ({:.0}/{}, {:.1}%)", r.actual_qps, r.target_qps, qps_achievement);
+            println!(
+                "  ❌ QPS 未达标 ({:.0}/{}, {:.1}%)",
+                r.actual_qps, r.target_qps, qps_achievement
+            );
         }
     }
 

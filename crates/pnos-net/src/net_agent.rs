@@ -38,10 +38,12 @@ use tracing::{debug, info, warn};
 
 use crate::discovery::lpd::{LpdDiscoveryService, DEFAULT_LPD_MULTICAST_ADDR};
 use crate::discovery::peer_cache::PeerCache;
-use crate::nat::{HolePuncher, HolePunchConfig, NatConfig, NatManager, NatStatus};
-use crate::strategy::{ConnectMethod, ConnectStrategy, ConnectStrategyConfig, ConnectResult};
+use crate::nat::{HolePunchConfig, HolePuncher, NatConfig, NatManager, NatStatus};
+use crate::strategy::{ConnectMethod, ConnectResult, ConnectStrategy, ConnectStrategyConfig};
 use crate::transport::tcp::TcpTransport;
-use crate::transport::{IrohTransport, IrohTransportConfig, Transport, TransportKind, TransportMode, TransportRouter};
+use crate::transport::{
+    IrohTransport, IrohTransportConfig, Transport, TransportKind, TransportMode, TransportRouter,
+};
 use crate::types::{DiscoveredNode, NodeId, Reachability};
 
 /// NetAgent 配置
@@ -106,10 +108,7 @@ pub enum NetEvent {
         latency: Duration,
     },
     /// 连接失败
-    ConnectFailed {
-        node_id: NodeId,
-        reason: String,
-    },
+    ConnectFailed { node_id: NodeId, reason: String },
     /// NAT 状态变化
     NatStatusChanged(NatStatus),
     /// 本机映射地址变化
@@ -182,8 +181,7 @@ impl NetAgent {
             strategy = strategy.with_hole_puncher(hp.clone());
         }
         let tcp_transport = TcpTransport::new(strategy);
-        let mut router = TransportRouter::new(config.transport_mode)
-            .with_tcp(tcp_transport);
+        let mut router = TransportRouter::new(config.transport_mode).with_tcp(tcp_transport);
         // 注入 IrohTransport（如果配置了）
         if let Some(iroh_cfg) = &config.iroh_config {
             let iroh_transport = IrohTransport::new(iroh_cfg.clone());
@@ -240,7 +238,10 @@ impl NetAgent {
                 .await
             {
                 Ok(ext) => {
-                    info!("[net-agent] TCP 端口映射成功: {} → 外部 {}", listen_port, ext);
+                    info!(
+                        "[net-agent] TCP 端口映射成功: {} → 外部 {}",
+                        listen_port, ext
+                    );
                 }
                 Err(e) => {
                     warn!("[net-agent] TCP 端口映射失败: {}", e);
@@ -252,7 +253,10 @@ impl NetAgent {
                 .await
             {
                 Ok(ext) => {
-                    info!("[net-agent] UDP 端口映射成功: {} → 外部 {}", listen_port, ext);
+                    info!(
+                        "[net-agent] UDP 端口映射成功: {} → 外部 {}",
+                        listen_port, ext
+                    );
                 }
                 Err(e) => {
                     debug!("[net-agent] UDP 端口映射失败: {}", e);
@@ -311,7 +315,11 @@ impl NetAgent {
                 if discovery.enabled() {
                     match discovery.start().await {
                         Ok(_) => info!("[net-agent] 外部发现器已启动: {}", discovery.name()),
-                        Err(e) => warn!("[net-agent] 外部发现器 {} 启动失败: {}", discovery.name(), e),
+                        Err(e) => warn!(
+                            "[net-agent] 外部发现器 {} 启动失败: {}",
+                            discovery.name(),
+                            e
+                        ),
                     }
                 }
             }
