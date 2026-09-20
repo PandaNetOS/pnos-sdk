@@ -372,7 +372,7 @@ impl HolePuncher {
         peer_addr: SocketAddr,
         nat_type: NatType,
     ) -> anyhow::Result<SocketAddr> {
-        let punch_data = b"PDC_HOLE_PUNCH";
+        let punch_data = b"PNOS_HOLE_PUNCH";
         let timeout = Duration::from_millis(self.config.punch_timeout_ms);
 
         match nat_type {

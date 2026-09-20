@@ -62,8 +62,8 @@ pub struct MqttDiscoveryMessage {
     pub addresses: Vec<String>,
     /// API/HTTP 监控端口
     pub api_port: u16,
-    /// 联邦监听端口
-    pub federation_port: u16,
+    /// 服务监听端口
+    pub service_port: u16,
     /// 能力位掩码（预留）
     pub capabilities: u32,
     /// 发送时间戳（Unix 秒）
@@ -75,7 +75,7 @@ impl MqttDiscoveryMessage {
         node_id: [u8; 20],
         addresses: Vec<SocketAddr>,
         api_port: u16,
-        federation_port: u16,
+        service_port: u16,
     ) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -86,7 +86,7 @@ impl MqttDiscoveryMessage {
             node_id: hex::encode(node_id),
             addresses: addresses.into_iter().map(|a| a.to_string()).collect(),
             api_port,
-            federation_port,
+            service_port,
             capabilities: 0,
             timestamp: now,
         }
@@ -113,8 +113,8 @@ impl MqttDiscoveryMessage {
 pub struct MqttDiscoveryService {
     /// 自己的节点 ID
     my_node_id: [u8; 20],
-    /// 联邦监听端口
-    federation_port: u16,
+    /// 服务监听端口
+    service_port: u16,
     /// API/HTTP 监控端口
     api_port: u16,
     /// 自己的可连接地址（公网映射地址等）
@@ -133,7 +133,7 @@ impl MqttDiscoveryService {
     /// 创建 MQTT 发现服务
     pub fn new(
         my_node_id: [u8; 20],
-        federation_port: u16,
+        service_port: u16,
         api_port: u16,
         my_addresses: Vec<SocketAddr>,
         discovered_tx: broadcast::Sender<DiscoveredNode>,
@@ -150,7 +150,7 @@ impl MqttDiscoveryService {
 
         Self {
             my_node_id,
-            federation_port,
+            service_port,
             api_port,
             my_addresses,
             heartbeat_secs: DEFAULT_MQTT_HEARTBEAT_SECS,
@@ -252,7 +252,7 @@ impl MqttDiscoveryService {
             self.my_node_id,
             self.my_addresses.clone(),
             self.api_port,
-            self.federation_port,
+            self.service_port,
         );
         let payload = msg.to_json()?;
         client
@@ -292,7 +292,7 @@ impl MqttDiscoveryService {
                         self.my_node_id,
                         self.my_addresses.clone(),
                         self.api_port,
-                        self.federation_port,
+                        self.service_port,
                     );
                     if let Ok(payload) = msg.to_json() {
                         if let Err(e) = client.publish(MQTT_DISCOVERY_TOPIC, QoS::AtMostOnce, true, payload).await {
