@@ -40,6 +40,9 @@ use crate::discovery::lpd::{LpdDiscoveryService, DEFAULT_LPD_MULTICAST_ADDR};
 use crate::discovery::peer_cache::PeerCache;
 use crate::nat::{HolePunchConfig, HolePuncher, NatConfig, NatManager, NatStatus};
 use crate::strategy::{ConnectMethod, ConnectResult, ConnectStrategy, ConnectStrategyConfig};
+
+/// PeerCache 定期落盘间隔
+const PEER_CACHE_SAVE_INTERVAL: Duration = Duration::from_secs(300);
 use crate::transport::tcp::TcpTransport;
 use crate::transport::{
     IrohTransport, IrohTransportConfig, Transport, TransportKind, TransportMode, TransportRouter,
@@ -204,7 +207,7 @@ impl NetAgent {
     }
 
     /// 仅启动传输层（TCP + Iroh），不启动 NAT 映射和发现服务
-    /// 适用于已有独立发现机制的调用方（如 PDC 联邦层）
+    /// 适用于已有独立发现机制的调用方（如业务层自带发现）
     pub async fn start_transport_only(self: &Arc<Self>) -> anyhow::Result<()> {
         if *self.started.read() {
             warn!("[net-agent] NetAgent 已启动，忽略重复启动");
@@ -330,7 +333,9 @@ impl NetAgent {
             let self_clone = self.clone();
             let mut shutdown_rx = self.shutdown.subscribe();
             tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_secs(300));
+                // [ALLOWED-INTERVAL] PeerCache 定期落盘：固定 5 分钟（受磁盘 IO 成本约束），
+                // 非业务可配参数；由 shutdown 广播退出。
+                let mut ticker = tokio::time::interval(PEER_CACHE_SAVE_INTERVAL);
                 loop {
                     tokio::select! {
                         _ = ticker.tick() => {

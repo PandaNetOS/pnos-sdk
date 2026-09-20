@@ -3,7 +3,7 @@
 //! 在两个都在 NAT 后面的节点之间建立直接的 UDP 连接。
 //!
 //! 打洞原理：
-//! ```
+//! ```text
 //! 节点 A (NAT后)                    节点 B (NAT后)
 //!      │                                  │
 //!      │──── 1. 获取公网映射地址 ────→ STUN
@@ -34,6 +34,15 @@ use tokio::net::UdpSocket as TokioUdpSocket;
 use tracing::{debug, info, warn};
 
 use super::stun::{stun_binding_request, NatType};
+
+/// STUN 绑定请求超时
+const STUN_BINDING_TIMEOUT: Duration = Duration::from_millis(2000);
+/// NAT 类型检测超时
+const NAT_DETECT_TIMEOUT: Duration = Duration::from_millis(2000);
+/// 端口预测模式下的响应轮询等待
+const PORT_PREDICT_RESPONSE_WAIT: Duration = Duration::from_millis(50);
+/// 打洞重试计数初值（0 = 尚未重试；实际上限由 config.max_retries 控制）
+const RETRIES_INITIAL: u32 = 0;
 
 // ---------------------------------------------------------------------------
 // 打洞配置
@@ -213,7 +222,7 @@ impl HolePuncher {
         let local_str = format!("{}", local_addr);
 
         for stun_server in &self.config.stun_servers {
-            match stun_binding_request(stun_server, &local_str, Duration::from_millis(2000)) {
+            match stun_binding_request(stun_server, &local_str, STUN_BINDING_TIMEOUT) {
                 Ok(result) if result.success => {
                     if let Some(mapped) = result.mapped_addr {
                         info!(
@@ -249,7 +258,7 @@ impl HolePuncher {
             &self.config.stun_servers[0],
             &self.config.stun_servers[1],
             &local_addr,
-            Duration::from_millis(2000),
+            NAT_DETECT_TIMEOUT,
         );
 
         *self.nat_type.write() = nat_type;
@@ -271,7 +280,7 @@ impl HolePuncher {
             peer_id: peer_id.to_string(),
             peer_addr,
             start_time: start,
-            retries: 0,
+            retries: RETRIES_INITIAL,
             success: false,
         };
         self.active_sessions
@@ -304,7 +313,7 @@ impl HolePuncher {
             peer_addr: None,
             local_mapped_addr: local_mapped,
             duration_ms: 0,
-            retries: 0,
+            retries: RETRIES_INITIAL,
             nat_type: format!("{:?}", nat_type),
             error: None,
             strategy: strategy.to_string(),
@@ -388,7 +397,7 @@ impl HolePuncher {
 
                     // 每隔几个包检查一次响应
                     if offset % 10 == 0 {
-                        if let Ok(addr) = self.wait_for_response(Duration::from_millis(50)).await {
+                        if let Ok(addr) = self.wait_for_response(PORT_PREDICT_RESPONSE_WAIT).await {
                             return Ok(addr);
                         }
                     }

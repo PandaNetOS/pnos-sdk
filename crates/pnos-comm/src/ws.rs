@@ -15,6 +15,13 @@ use crate::config::SdkConfig;
 use crate::error::{Result, SdkError};
 use pnos::events::{WsMessage, WsSubscribe};
 
+/// WebSocket 重连初始退避
+const WS_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
+/// WebSocket 重连最大退避
+const WS_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
+/// WebSocket 保活 Ping 周期
+const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
+
 /// WebSocket 客户端
 #[derive(Clone)]
 pub struct WsClient {
@@ -78,7 +85,7 @@ impl WsClient {
 
     /// 主循环：连接 → 读写 → 断线重连
     async fn run(&self) {
-        let mut reconnect_delay = Duration::from_secs(1);
+        let mut reconnect_delay = WS_RECONNECT_INITIAL_DELAY;
 
         loop {
             tokio::select! {
@@ -96,7 +103,7 @@ impl WsClient {
                             warn!("WebSocket 断开: {}，{}ms 后重连", e, reconnect_delay.as_millis());
                             tokio::time::sleep(reconnect_delay).await;
                             // 指数退避，最大 30s
-                            reconnect_delay = std::cmp::min(reconnect_delay * 2, Duration::from_secs(30));
+                            reconnect_delay = std::cmp::min(reconnect_delay * 2, WS_RECONNECT_MAX_DELAY);
                         }
                     }
                 }
@@ -141,7 +148,9 @@ impl WsClient {
         drop(subs);
 
         // 保活定时器
-        let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
+        // [ALLOWED-INTERVAL] WebSocket 保活 Ping 周期：协议层固定 30s（RFC 6455 链路保活），
+        // 非业务可配参数；连接由 shutdown 通知或读写错误退出。
+        let mut ping_interval = tokio::time::interval(WS_PING_INTERVAL);
 
         loop {
             tokio::select! {

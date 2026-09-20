@@ -9,6 +9,23 @@ use std::time::Duration;
 use pnos::config::PnosConfig;
 use tracing::debug;
 
+/// 默认 runtime 地址（基础容器内）
+const DEFAULT_RUNTIME_URL: &str = "http://127.0.0.1:8080";
+/// 默认应用监听端口
+const DEFAULT_APP_PORT: u16 = 18080;
+/// 默认心跳间隔
+const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+/// 服务发现缓存 TTL
+const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(30);
+/// 默认 HTTP 请求超时
+const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+/// 默认调用重试次数
+const DEFAULT_CALL_RETRIES: u32 = 2;
+/// 默认优雅关闭超时（对应 docker stop 超时）
+const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+/// 默认注册重试最大时长
+const DEFAULT_REGISTER_RETRY_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// SDK 完整配置
 #[derive(Debug, Clone)]
 pub struct SdkConfig {
@@ -58,11 +75,15 @@ pub struct SdkConfig {
 
 impl SdkConfig {
     /// 从环境变量加载标准配置，runtime 地址从 `PNOS_RUNTIME_URL` 读取
+    ///
+    /// 工作目录边界：SDK 作为库不自行探测工作目录，`data_dir` 由宿主应用
+    /// （pdc / pnos-runtime 等）经 `WorkDir::auto_detect` 或 `--work-dir` 解析后，
+    /// 通过 `PNOS_DATA_DIR` 注入；SDK 仅在此读取，不在库内硬编码绝对路径。
     pub fn from_env(app_id: impl Into<String>) -> crate::error::Result<Self> {
         let pnos = PnosConfig::load().map_err(crate::error::SdkError::Business)?;
 
-        let runtime_url = std::env::var("PNOS_RUNTIME_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+        let runtime_url =
+            std::env::var("PNOS_RUNTIME_URL").unwrap_or_else(|_| DEFAULT_RUNTIME_URL.to_string());
 
         let data_dir = std::env::var("PNOS_DATA_DIR")
             .map(PathBuf::from)
@@ -79,17 +100,17 @@ impl SdkConfig {
             checkpoint_db,
             app_id: app_id.into(),
             version: "0.1.0".to_string(),
-            port: 18080,
+            port: DEFAULT_APP_PORT,
             health_check_path: "/health".to_string(),
             web_path: Some("/".to_string()),
             dependencies: Vec::new(),
             auto_heartbeat: true,
-            heartbeat_interval: Duration::from_secs(15),
-            discovery_cache_ttl: Duration::from_secs(30),
-            http_timeout: Duration::from_secs(30),
-            call_retries: 2,
-            graceful_shutdown_timeout: Duration::from_secs(10),
-            register_retry_timeout: Duration::from_secs(30),
+            heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
+            discovery_cache_ttl: DEFAULT_DISCOVERY_CACHE_TTL,
+            http_timeout: DEFAULT_HTTP_TIMEOUT,
+            call_retries: DEFAULT_CALL_RETRIES,
+            graceful_shutdown_timeout: DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
+            register_retry_timeout: DEFAULT_REGISTER_RETRY_TIMEOUT,
         })
     }
 

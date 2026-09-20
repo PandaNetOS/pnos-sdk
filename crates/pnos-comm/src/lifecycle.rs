@@ -13,6 +13,9 @@ use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
+/// 默认优雅关闭超时（对应 docker stop 默认超时）
+const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// 关闭回调类型
 type ShutdownCallback = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
@@ -29,7 +32,7 @@ impl LifecycleManager {
         Self {
             shutdown_notify: Arc::new(Notify::new()),
             callbacks: Arc::new(Mutex::new(Vec::new())),
-            default_timeout: Duration::from_secs(10),
+            default_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
         }
     }
 

@@ -10,8 +10,9 @@
 //!
 //! 消息格式：4 字节魔数 `b"PDCL"` + bincode 序列化的 [`LpdAnnounceMessage`]。
 
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -31,13 +32,20 @@ pub const DEFAULT_LPD_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 43, 21)
 /// 默认广播间隔（秒）
 pub const DEFAULT_LPD_BROADCAST_INTERVAL_SECS: u64 = 5;
 
+/// 同一 `(节点 ID, 源地址)` 的重复 announce 抑制窗口（秒）
+///
+/// 取 3 × 默认广播间隔。局域网多播在多网卡 / 多进程共享多播端口的场景下，
+/// 内核会对同一条报文产生重复投递（实测启动瞬间同节点被投递 60+ 次），
+/// 若不抑制，上层订阅方会被同一节点反复唤醒并产生日志风暴。
+pub const DEFAULT_LPD_DEDUP_WINDOW_SECS: u64 = 15;
+
 /// LPD 广播消息（bincode 序列化）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LpdAnnounceMessage {
     /// 发送方节点 ID（20字节）
     pub node_id: [u8; 20],
-    /// 联邦监听端口（TCP+UDP）
-    pub federation_port: u16,
+    /// 服务监听端口（TCP+UDP，对端据此连接）
+    pub service_port: u16,
     /// API/HTTP 监控端口
     pub api_port: u16,
     /// 能力位掩码（预留，当前为 0）
@@ -72,8 +80,8 @@ impl LpdAnnounceMessage {
 pub struct LpdDiscoveryService {
     /// 本机节点 ID（用于跳过自己的广播）
     my_node_id: [u8; 20],
-    /// 本机联邦监听端口（announce 时告知其他节点）
-    federation_port: u16,
+    /// 本机服务监听端口（announce 时告知其他节点）
+    service_port: u16,
     /// 本机 API/HTTP 监控端口
     api_port: u16,
     /// 多播地址
@@ -86,13 +94,17 @@ pub struct LpdDiscoveryService {
     discovered_tx: broadcast::Sender<DiscoveredNode>,
     /// 关闭信号
     shutdown: broadcast::Sender<()>,
+    /// 近期已投递的 `(节点 ID, 源地址)` → 最近投递时刻（Unix 秒）
+    ///
+    /// 用于抑制重复 announce 造成的重复发现事件与日志风暴，见 [`DEFAULT_LPD_DEDUP_WINDOW_SECS`]。
+    recent_announces: Mutex<HashMap<([u8; 20], SocketAddr), u64>>,
 }
 
 impl LpdDiscoveryService {
     /// 创建 LPD 发现服务
     pub fn new(
         my_node_id: [u8; 20],
-        federation_port: u16,
+        service_port: u16,
         api_port: u16,
         multicast_port: u16,
         discovered_tx: broadcast::Sender<DiscoveredNode>,
@@ -100,13 +112,14 @@ impl LpdDiscoveryService {
     ) -> Self {
         Self {
             my_node_id,
-            federation_port,
+            service_port,
             api_port,
             multicast_addr: DEFAULT_LPD_MULTICAST_ADDR,
             multicast_port,
             broadcast_interval_secs: DEFAULT_LPD_BROADCAST_INTERVAL_SECS,
             discovered_tx,
             shutdown,
+            recent_announces: Mutex::new(HashMap::new()),
         }
     }
 
@@ -175,7 +188,7 @@ impl LpdDiscoveryService {
                 "[net-lpd] LPD 多播发现已启动: group={}:{}, 联邦端口:{}, API端口:{}, 间隔:{}s",
                 self.multicast_addr,
                 self.multicast_port,
-                self.federation_port,
+                self.service_port,
                 self.api_port,
                 self.broadcast_interval_secs
             );
@@ -223,7 +236,7 @@ impl LpdDiscoveryService {
     async fn broadcast_once(&self, socket: &UdpSocket, dst: &SocketAddr) -> anyhow::Result<()> {
         let msg = LpdAnnounceMessage {
             node_id: self.my_node_id,
-            federation_port: self.federation_port,
+            service_port: self.service_port,
             api_port: self.api_port,
             capabilities: 0,
             data_entry_count: 0,
@@ -256,13 +269,26 @@ impl LpdDiscoveryService {
             std::net::IpAddr::V6(_) => return false,
         };
 
-        // 4. 构造 DiscoveredNode
+        // 4. 去重：同一 `(节点 ID, 源地址)` 在抑制窗口内只投递一次
+        //
+        // 局域网多播会被内核重复投递（实测启动瞬间同节点 60+ 次），
+        // 不去重会让上层被同一节点反复唤醒、并刷出等量日志。
         let now = current_unix_secs();
+        if !self.should_emit((msg.node_id, src), now) {
+            trace!(
+                "[net-lpd] 抑制窗口内重复 announce，已忽略: {} @ {}",
+                hex::encode(&msg.node_id[..8]),
+                src
+            );
+            return false;
+        }
+
+        // 5. 构造 DiscoveredNode
         let discovered = DiscoveredNode {
             node_id: NodeId(msg.node_id),
             addresses: vec![SocketAddr::new(
                 std::net::IpAddr::V4(peer_ip),
-                msg.federation_port,
+                msg.service_port,
             )],
             reachability: Reachability::Unknown,
             nat_type: None,
@@ -270,18 +296,40 @@ impl LpdDiscoveryService {
             last_seen: now,
         };
 
-        // 5. 发送发现事件（订阅者可能不存在，忽略错误）
-        let is_new = self.discovered_tx.send(discovered).is_ok();
-        if is_new {
+        // 6. 发送发现事件（订阅者可能不存在，忽略错误）
+        let delivered = self.discovered_tx.send(discovered).is_ok();
+        if delivered {
             info!(
                 "[net-lpd] 发现局域网新节点: {} ({}:{}), API端口:{}",
                 hex::encode(&msg.node_id[..8]),
                 peer_ip,
-                msg.federation_port,
+                msg.service_port,
                 msg.api_port,
             );
         }
         true
+    }
+
+    /// 判断某个 `(节点 ID, 源地址)` 本轮是否应投递发现事件
+    ///
+    /// 首次出现、或距上次投递已超过 [`DEFAULT_LPD_DEDUP_WINDOW_SECS`] 时返回 `true`。
+    /// 表大小设有上界，超出时清理过期条目，避免随节点数无界增长。
+    fn should_emit(&self, key: ([u8; 20], SocketAddr), now: u64) -> bool {
+        let mut recent = match self.recent_announces.lock() {
+            Ok(g) => g,
+            // 锁中毒不影响去重语义，取回内部值继续
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if recent.len() > 4096 {
+            recent.retain(|_, ts| now.saturating_sub(*ts) < DEFAULT_LPD_DEDUP_WINDOW_SECS);
+        }
+        match recent.get(&key) {
+            Some(ts) if now.saturating_sub(*ts) < DEFAULT_LPD_DEDUP_WINDOW_SECS => false,
+            _ => {
+                recent.insert(key, now);
+                true
+            }
+        }
     }
 }
 
@@ -323,10 +371,10 @@ mod tests {
         )
     }
 
-    fn make_remote_wire(node_id: [u8; 20], federation_port: u16) -> Vec<u8> {
+    fn make_remote_wire(node_id: [u8; 20], service_port: u16) -> Vec<u8> {
         let msg = LpdAnnounceMessage {
             node_id,
-            federation_port,
+            service_port,
             api_port: 9090,
             capabilities: 0,
             data_entry_count: 12345,
@@ -338,7 +386,7 @@ mod tests {
     fn test_lpd_message_serde_roundtrip() {
         let msg = LpdAnnounceMessage {
             node_id: [0xAB; 20],
-            federation_port: 6885,
+            service_port: 6885,
             api_port: 6880,
             capabilities: 3,
             data_entry_count: 999,
@@ -352,7 +400,7 @@ mod tests {
     fn test_lpd_message_with_magic() {
         let msg = LpdAnnounceMessage {
             node_id: [0x11; 20],
-            federation_port: 6885,
+            service_port: 6885,
             api_port: 6880,
             capabilities: 0,
             data_entry_count: 42,
@@ -373,7 +421,7 @@ mod tests {
         assert_eq!(svc.multicast_addr, Ipv4Addr::new(239, 255, 43, 21));
         assert_eq!(svc.multicast_port, 6771);
         assert_eq!(svc.broadcast_interval_secs, 5);
-        assert_eq!(svc.federation_port, 6885);
+        assert_eq!(svc.service_port, 6885);
         assert_eq!(svc.api_port, 6880);
 
         let svc2 = make_test_service(16771)
@@ -422,5 +470,48 @@ mod tests {
         let garbage: SocketAddr = "10.0.0.5:1111".parse().unwrap();
         assert!(!svc.handle_received_message(b"XXXXgarbage", garbage));
         assert!(discovered_rx.try_recv().is_err(), "不应有额外事件");
+    }
+
+    #[test]
+    fn test_dedup_repeated_announce() {
+        let (shutdown_tx, _rx) = broadcast::channel(1);
+        let (discovered_tx, mut discovered_rx) = broadcast::channel(64);
+        let svc =
+            LpdDiscoveryService::new([0xAA; 20], 6885, 6880, 6771, discovered_tx, shutdown_tx);
+
+        let mut remote_id = [0u8; 20];
+        remote_id.copy_from_slice(b"REMOTE_NODE_ID_12345");
+        let wire = make_remote_wire(remote_id, 6885);
+        let src: SocketAddr = "192.168.1.200:54321".parse().unwrap();
+
+        // 首次：应投递并产生事件
+        assert!(svc.handle_received_message(&wire, src), "首次应投递");
+        assert!(discovered_rx.try_recv().is_ok(), "首次应产生发现事件");
+
+        // 抑制窗口内连续重复（模拟内核重复投递）：事件应被抑制
+        for _ in 0..50 {
+            assert!(
+                !svc.handle_received_message(&wire, src),
+                "窗口内重复报文应被抑制"
+            );
+        }
+        assert!(
+            discovered_rx.try_recv().is_err(),
+            "窗口内重复报文不应产生事件"
+        );
+
+        // 同节点但源地址不同：应视为不同来源，正常投递
+        let src2: SocketAddr = "192.168.1.201:54321".parse().unwrap();
+        assert!(svc.handle_received_message(&wire, src2), "不同源地址应投递");
+        assert!(discovered_rx.try_recv().is_ok(), "不同源地址应产生事件");
+
+        // 另一个节点：互不影响
+        let mut other_id = [0u8; 20];
+        other_id.copy_from_slice(b"OTHER_NODE_ID_123456");
+        let other_wire = make_remote_wire(other_id, 6886);
+        assert!(
+            svc.handle_received_message(&other_wire, src),
+            "不同节点应投递"
+        );
     }
 }
