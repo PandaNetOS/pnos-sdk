@@ -38,6 +38,11 @@ pub const PUBLIC_BROKERS: &[(&str, u16)] = &[
     ("mqtt.eclipseprojects.io", 1883),
 ];
 
+/// MQTT 连接失败后的重连间隔
+const MQTT_RECONNECT_DELAY: Duration = Duration::from_secs(5);
+/// MQTT keep-alive 周期（协议层链路保活）
+const MQTT_KEEP_ALIVE: Duration = Duration::from_secs(60);
+
 /// Broker 域名 → IP 直连 fallback（DNS 解析失败时使用）
 /// 某些网络环境下 UDP 53 被封，DNS 解析超时，但 TCP 1883 可直连
 pub const BROKER_IP_FALLBACK: &[(&str, &str)] = &[
@@ -181,7 +186,7 @@ impl MqttDiscoveryService {
             let self_clone = self.clone();
             tokio::spawn(async move {
                 // 连接失败后自动重连（最多重试3次，间隔5秒）
-                let mut retries = 0;
+                let mut retries: u32 = 0;
                 loop {
                     match self_clone.connect_and_run(&host, port).await {
                         Ok(()) => break, // 正常关闭
@@ -195,7 +200,7 @@ impl MqttDiscoveryService {
                                 "[net-mqtt] broker {}:{} 连接失败({}/3)，5秒后重试: {}",
                                 host, port, retries, e
                             );
-                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            tokio::time::sleep(MQTT_RECONNECT_DELAY).await;
                         }
                     }
                 }
@@ -230,7 +235,7 @@ impl MqttDiscoveryService {
 
         let client_id = format!("pnos-{}", hex::encode(&self.my_node_id[..8]));
         let mut options = MqttOptions::new(client_id, &connect_host, port);
-        options.set_keep_alive(Duration::from_secs(60));
+        options.set_keep_alive(MQTT_KEEP_ALIVE);
 
         let (client, mut eventloop) = AsyncClient::new(options, 64);
 
@@ -261,6 +266,8 @@ impl MqttDiscoveryService {
 
         let my_node_id_hex = hex::encode(self.my_node_id);
         let heartbeat_interval = Duration::from_secs(self.heartbeat_secs);
+        // [ALLOWED-INTERVAL] MQTT 心跳 publish 周期：间隔取自 heartbeat_secs（配置项），
+        // 非硬编码；由 shutdown 通知退出。
         let mut heartbeat_timer = tokio::time::interval(heartbeat_interval);
         let mut shutdown_rx = self.shutdown.subscribe();
 

@@ -4,7 +4,7 @@
 //! 内置 5 个 DNS：114、阿里、腾讯、谷歌、Cloudflare。
 //! hickory-resolver 自带缓存，无需额外实现。
 //!
-//! 从 pdc 迁移而来，供 pnos-net 各模块（MQTT 发现等）统一使用。
+//! 供 pnos-net 各模块（MQTT 发现等）统一使用。
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -22,6 +22,9 @@ const DNS_SERVERS: &[&str] = &[
     "8.8.8.8:53",         // 谷歌 DNS
     "1.1.1.1:53",         // Cloudflare DNS
 ];
+
+/// DNS 单次查询超时
+const DNS_QUERY_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// DNS 解析池
 pub struct DnsPool {
@@ -45,7 +48,7 @@ impl DnsPool {
         }
 
         let mut opts = ResolverOpts::default();
-        opts.timeout = Duration::from_secs(3);
+        opts.timeout = DNS_QUERY_TIMEOUT;
         opts.attempts = 2;
         // 并行查询所有 nameserver，取最快响应
         opts.num_concurrent_reqs = DNS_SERVERS.len();

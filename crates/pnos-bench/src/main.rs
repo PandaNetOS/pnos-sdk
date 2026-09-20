@@ -13,6 +13,9 @@ use pnos_bench::{
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
+/// 默认进度上报间隔（与 BenchConfig::default() 中的取值保持一致）
+const DEFAULT_PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
+
 #[derive(Parser)]
 #[command(name = "pnos-bench", version, about = "PandaNetOS 通用压测框架")]
 struct Cli {
@@ -147,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
                 concurrency,
                 duration: parse_duration(&duration),
                 request_timeout: parse_duration(&timeout),
-                progress_interval: Duration::from_secs(5),
+                progress_interval: DEFAULT_PROGRESS_INTERVAL,
                 args: extra_args,
             };
 

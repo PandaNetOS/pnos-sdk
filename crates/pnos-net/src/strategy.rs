@@ -18,6 +18,11 @@ use crate::transport::tcp::TcpTransportStream;
 use crate::transport::TransportKind;
 use crate::types::Reachability;
 
+/// 打洞成功后 TCP 升级超时（NAT 映射已建立，给足握手时间）
+const HOLE_PUNCH_TCP_TIMEOUT: Duration = Duration::from_secs(5);
+/// 打洞失败后的兜底 TCP 超时（对端可能本就是公网）
+const FALLBACK_TCP_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// 连接策略配置
 #[derive(Debug, Clone)]
 pub struct ConnectStrategyConfig {
@@ -215,14 +220,14 @@ impl ConnectStrategy {
         if punch_result.success {
             debug!("[net-strategy] UDP 打洞成功，尝试 TCP 连接 {}", addr);
             // 打洞后 NAT 映射已建立，TCP 连接可能成功
-            crate::connector::connect_one(addr, Duration::from_secs(5)).await
+            crate::connector::connect_one(addr, HOLE_PUNCH_TCP_TIMEOUT).await
         } else {
             debug!(
                 "[net-strategy] UDP 打洞失败 {}: {:?}",
                 addr, punch_result.error
             );
             // 即使打洞失败，也尝试一下 TCP（可能对端是公网）
-            crate::connector::connect_one(addr, Duration::from_secs(3)).await
+            crate::connector::connect_one(addr, FALLBACK_TCP_TIMEOUT).await
         }
     }
 }

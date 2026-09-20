@@ -10,6 +10,9 @@ use tracing::{debug, info, warn};
 use crate::metrics::MetricsCollector;
 use crate::scenario::{BenchContext, Scenario};
 
+/// 等待停止标志的轮询间隔
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 /// 压测配置
 #[derive(Debug, Clone)]
 pub struct BenchConfig {
@@ -91,6 +94,8 @@ impl BenchEngine {
         tokio::spawn(async move {
             let mut last_total = 0u64;
             let mut last_time = Instant::now();
+            // [ALLOWED-SLEEP] 压测进度上报循环：sleep 间隔取自 BenchConfig.progress_interval
+            // （配置项而非硬编码周期）；由 elapsed >= duration 与 stop_flag 双重退出。
             loop {
                 tokio::time::sleep(progress_interval).await;
                 let (total, success, failure, timeout) = metrics_clone.snapshot();
@@ -144,7 +149,7 @@ impl BenchEngine {
 
         // 等待停止信号
         while !stop_flag.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(STOP_POLL_INTERVAL).await;
         }
         debug!("收到停止信号，等待 worker 退出...");
 
@@ -207,7 +212,7 @@ impl BenchEngine {
         let interval = if per_worker_qps > 0.0 {
             Duration::from_micros((1_000_000.0 / per_worker_qps) as u64)
         } else {
-            Duration::from_micros(0)
+            Duration::ZERO
         };
 
         let mut next_send = Instant::now();

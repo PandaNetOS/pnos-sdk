@@ -1,6 +1,6 @@
 //! NAT 穿透模块
 //!
-//! 自动配置路由器端口映射，确保 PDC 服务从公网可达。
+//! 自动配置路由器端口映射，确保本地服务从公网可达。
 //!
 //! 策略：
 //! 1. UPnP IGD 发现网关
@@ -38,6 +38,11 @@ use std::time::{Duration, Instant};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
+
+/// UPnP 网关发现搜索超时
+const GATEWAY_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+/// 端口映射冲突时的最大重试次数
+const PORT_MAP_MAX_RETRIES: u16 = 10;
 
 /// NAT 穿透协议类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -259,7 +264,7 @@ impl NatManager {
         relay_port: u16,
         utp_port: u16,
         tcp_pex_port: u16,
-        federation_port: u16,
+        service_port: u16,
     ) -> anyhow::Result<()> {
         if !self.enabled {
             info!("[nat] UPnP 未启用，跳过端口映射");
@@ -308,7 +313,7 @@ impl NatManager {
                 &gateway,
                 igd::PortMappingProtocol::TCP,
                 http_port,
-                "PDC HTTP Tracker",
+                "PNOS HTTP Tracker",
             )
             .await
         {
@@ -318,7 +323,7 @@ impl NatManager {
                     protocol: "TCP".to_string(),
                     internal_port: http_port,
                     external_port: ext_port,
-                    description: "PDC HTTP Tracker".to_string(),
+                    description: "PNOS HTTP Tracker".to_string(),
                     verified: false,
                     reachable: false,
                 });
@@ -336,7 +341,7 @@ impl NatManager {
                 &gateway,
                 igd::PortMappingProtocol::UDP,
                 udp_port,
-                "PDC UDP Tracker",
+                "PNOS UDP Tracker",
             )
             .await
         {
@@ -346,7 +351,7 @@ impl NatManager {
                     protocol: "UDP".to_string(),
                     internal_port: udp_port,
                     external_port: ext_port,
-                    description: "PDC UDP Tracker".to_string(),
+                    description: "PNOS UDP Tracker".to_string(),
                     verified: false,
                     reachable: false,
                 });
@@ -365,7 +370,7 @@ impl NatManager {
                     &gateway,
                     igd::PortMappingProtocol::UDP,
                     crawler_port,
-                    "PDC DHT Crawler",
+                    "PNOS DHT Crawler",
                 )
                 .await
             {
@@ -378,7 +383,7 @@ impl NatManager {
                         protocol: "UDP".to_string(),
                         internal_port: crawler_port,
                         external_port: ext_port,
-                        description: "PDC DHT Crawler".to_string(),
+                        description: "PNOS DHT Crawler".to_string(),
                         verified: false,
                         reachable: false,
                     });
@@ -398,7 +403,7 @@ impl NatManager {
                     &gateway,
                     igd::PortMappingProtocol::TCP,
                     relay_port,
-                    "PDC Relay TCP",
+                    "PNOS Relay TCP",
                 )
                 .await
             {
@@ -412,7 +417,7 @@ impl NatManager {
                         protocol: "TCP".to_string(),
                         internal_port: relay_port,
                         external_port: ext_port,
-                        description: "PDC Relay TCP".to_string(),
+                        description: "PNOS Relay TCP".to_string(),
                         verified: false,
                         reachable: false,
                     });
@@ -427,7 +432,7 @@ impl NatManager {
                     &gateway,
                     igd::PortMappingProtocol::UDP,
                     relay_port,
-                    "PDC Relay UDP",
+                    "PNOS Relay UDP",
                 )
                 .await
             {
@@ -441,7 +446,7 @@ impl NatManager {
                         protocol: "UDP".to_string(),
                         internal_port: relay_port,
                         external_port: ext_port,
-                        description: "PDC Relay UDP".to_string(),
+                        description: "PNOS Relay UDP".to_string(),
                         verified: false,
                         reachable: false,
                     });
@@ -459,7 +464,7 @@ impl NatManager {
                     &gateway,
                     igd::PortMappingProtocol::UDP,
                     utp_port,
-                    "PDC uTP Server",
+                    "PNOS uTP Server",
                 )
                 .await
             {
@@ -470,7 +475,7 @@ impl NatManager {
                         protocol: "UDP".to_string(),
                         internal_port: utp_port,
                         external_port: ext_port,
-                        description: "PDC uTP Server".to_string(),
+                        description: "PNOS uTP Server".to_string(),
                         verified: false,
                         reachable: false,
                     });
@@ -488,7 +493,7 @@ impl NatManager {
                     &gateway,
                     igd::PortMappingProtocol::TCP,
                     tcp_pex_port,
-                    "PDC TCP-PEX Receiver",
+                    "PNOS TCP-PEX Receiver",
                 )
                 .await
             {
@@ -502,7 +507,7 @@ impl NatManager {
                         protocol: "TCP".to_string(),
                         internal_port: tcp_pex_port,
                         external_port: ext_port,
-                        description: "PDC TCP-PEX Receiver".to_string(),
+                        description: "PNOS TCP-PEX Receiver".to_string(),
                         verified: false,
                         reachable: false,
                     });
@@ -514,14 +519,14 @@ impl NatManager {
         }
 
         // 4.8 联邦网络端口（TCP + UDP）
-        if federation_port > 0 {
+        if service_port > 0 {
             // 联邦 TCP
             match self
                 .map_port_with_retry(
                     &gateway,
                     igd::PortMappingProtocol::TCP,
-                    federation_port,
-                    "PDC Federation TCP",
+                    service_port,
+                    "PNOS Federation TCP",
                 )
                 .await
             {
@@ -529,19 +534,19 @@ impl NatManager {
                     success_count += 1;
                     info!(
                         "[nat] TCP {} → 外部 {} 映射成功（联邦）",
-                        federation_port, ext_port
+                        service_port, ext_port
                     );
                     self.mappings.write().push(NatMapping {
                         protocol: "TCP".to_string(),
-                        internal_port: federation_port,
+                        internal_port: service_port,
                         external_port: ext_port,
-                        description: "PDC Federation TCP".to_string(),
+                        description: "PNOS Federation TCP".to_string(),
                         verified: false,
                         reachable: false,
                     });
                 }
                 Err(e) => {
-                    warn!("[nat] TCP {} 映射失败（联邦）: {}", federation_port, e);
+                    warn!("[nat] TCP {} 映射失败（联邦）: {}", service_port, e);
                 }
             }
             // 联邦 UDP
@@ -549,8 +554,8 @@ impl NatManager {
                 .map_port_with_retry(
                     &gateway,
                     igd::PortMappingProtocol::UDP,
-                    federation_port,
-                    "PDC Federation UDP",
+                    service_port,
+                    "PNOS Federation UDP",
                 )
                 .await
             {
@@ -558,19 +563,19 @@ impl NatManager {
                     success_count += 1;
                     info!(
                         "[nat] UDP {} → 外部 {} 映射成功（联邦）",
-                        federation_port, ext_port
+                        service_port, ext_port
                     );
                     self.mappings.write().push(NatMapping {
                         protocol: "UDP".to_string(),
-                        internal_port: federation_port,
+                        internal_port: service_port,
                         external_port: ext_port,
-                        description: "PDC Federation UDP".to_string(),
+                        description: "PNOS Federation UDP".to_string(),
                         verified: false,
                         reachable: false,
                     });
                 }
                 Err(e) => {
-                    warn!("[nat] UDP {} 映射失败（联邦）: {}", federation_port, e);
+                    warn!("[nat] UDP {} 映射失败（联邦）: {}", service_port, e);
                 }
             }
         }
@@ -601,7 +606,7 @@ impl NatManager {
                 if tcp_pex_port > 0 {
                     total += 1;
                 }
-                if federation_port > 0 {
+                if service_port > 0 {
                     total += 2;
                 } // TCP + UDP
                 total
@@ -620,7 +625,7 @@ impl NatManager {
 
     /// 通用端口映射（自动发现网关，映射单个端口）
     ///
-    /// 适用于非 pdc 场景的通用端口映射。如果网关尚未发现，会自动发现。
+    /// 适用于任意调用方的通用端口映射。如果网关尚未发现，会自动发现。
     /// 映射成功后自动加入 mappings 列表。
     ///
     /// # 参数
@@ -695,7 +700,7 @@ impl NatManager {
         let local_ip = self.local_ip;
         tokio::task::spawn_blocking(move || {
             let options = igd::SearchOptions {
-                timeout: Some(Duration::from_secs(15)),
+                timeout: Some(GATEWAY_DISCOVERY_TIMEOUT),
                 bind_addr: std::net::SocketAddr::new(std::net::IpAddr::V4(local_ip), 0),
                 ..Default::default()
             };
@@ -725,7 +730,7 @@ impl NatManager {
         preferred_port: u16,
         description: &str,
     ) -> anyhow::Result<u16> {
-        let max_retries = 10;
+        let max_retries = PORT_MAP_MAX_RETRIES;
         let local_ip = self.local_ip;
         let lease = self.lease_duration;
 
@@ -808,7 +813,7 @@ impl NatManager {
         }
     }
 
-    /// 清理旧的 PDC 映射（防止上次崩溃残留）
+    /// 清理旧的映射（防止上次崩溃残留；兼容历史 "PDC" 与当前 "PNOS" 描述）
     async fn cleanup_old_mappings(&self, gateway: &igd::Gateway) {
         let gw = gateway.clone();
         let old_mappings = tokio::task::spawn_blocking(move || {
@@ -816,7 +821,9 @@ impl NatManager {
             for i in 0..200 {
                 match gw.get_generic_port_mapping_entry(i) {
                     Ok(entry) => {
-                        if entry.port_mapping_description.contains("PDC") {
+                        if entry.port_mapping_description.contains("PDC")
+                            || entry.port_mapping_description.contains("PNOS")
+                        {
                             result.push(entry);
                         }
                     }
@@ -852,6 +859,8 @@ impl NatManager {
         let renew_interval = Duration::from_secs((lease.max(60) / 2) as u64);
 
         tokio::spawn(async move {
+            // [ALLOWED-SLEEP] UPnP 映射定期续租：间隔为 lease_duration / 2（来自映射租约），
+            // 非硬编码周期；网关丢失时 continue 重试。
             loop {
                 tokio::time::sleep(renew_interval).await;
 

@@ -4,7 +4,7 @@
 //! 支持动态注册、按优先级排序、热插拔。
 //!
 //! 插件化架构：
-//! ```
+//! ```text
 //! NatManager
 //!   ├── providers: Vec<Arc<dyn NatProvider>>  (按优先级排序)
 //!   │     ├── UpnpProvider
@@ -66,7 +66,7 @@ pub trait NatProvider: Send + Sync {
     /// 验证映射是否在路由器上真实存在
     async fn verify_mappings(&self, gateway: &GatewayBackend, mappings: &mut [NatMapping]);
 
-    /// 清理旧的 PDC 映射
+    /// 清理旧的残留映射
     async fn cleanup_old_mappings(&self, gateway: &GatewayBackend);
 
     /// 释放所有映射

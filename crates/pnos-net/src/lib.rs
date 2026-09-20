@@ -30,6 +30,7 @@ pub mod discovery;
 pub mod dns;
 pub mod nat;
 pub mod net_agent;
+pub mod session;
 pub mod strategy;
 pub mod transport;
 pub mod types;
@@ -37,5 +38,6 @@ pub mod types;
 // 常用类型 re-export
 pub use dns::DnsPool;
 pub use net_agent::{NetAgent, NetAgentBuilder, NetAgentConfig, NetEvent};
+pub use session::{Frame, FrameTransport, SessionStats, SessionStatsSnapshot};
 pub use strategy::{ConnectMethod, ConnectResult, ConnectStrategy, ConnectStrategyConfig};
 pub use types::{DiscoveredNode, DiscoverySource, NodeAddress, NodeId, Reachability};

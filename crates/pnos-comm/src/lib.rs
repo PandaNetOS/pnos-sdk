@@ -89,6 +89,9 @@ use tracing::{error, info, warn};
 use crate::discovery::DiscoveryCache;
 use crate::events::EventHandler;
 
+/// 默认应用监听端口（与 SdkConfig 的默认端口一致）
+const DEFAULT_APP_PORT: u16 = 18080;
+
 /// Pnos 组件主入口（所有组件的组合体，应用与 Agent 共用）
 #[derive(Clone)]
 pub struct PnosApp {
@@ -235,7 +238,7 @@ impl PnosAppBuilder {
             app_id: app_id.into(),
             version: "1.0.0".to_string(),
             component_type: ComponentType::App,
-            port: 18080,
+            port: DEFAULT_APP_PORT,
             runtime_url: None,
             health_check_path: "/health".to_string(),
             web_path: Some("/".to_string()),
@@ -486,6 +489,8 @@ impl PnosAppBuilder {
             let register_req_clone = register_req.clone();
             tokio::spawn(async move {
                 let mut consecutive_failures = 0u32;
+                // [ALLOWED-SLEEP] 自动心跳循环：sleep 间隔取自 SdkConfig.heartbeat_interval
+                // （配置项而非硬编码周期）；连续失败 6 次触发重注册。
                 loop {
                     tokio::time::sleep(config_clone.heartbeat_interval).await;
                     // 心跳返回 bool：false 表示 runtime 未接受（组件可能不存在），须视为失败

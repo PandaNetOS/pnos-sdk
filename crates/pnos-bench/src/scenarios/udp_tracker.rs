@@ -3,11 +3,10 @@
 //! 实现 BEP 15 UDP Tracker 协议。
 //! 优化：Socket 池复用 + std Mutex（无 AsyncMutex）+ 预生成随机数。
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -21,6 +20,24 @@ const PROTOCOL_ID: u64 = 0x41727101980;
 const ACTION_CONNECT: u32 = 0;
 const ACTION_ANNOUNCE: u32 = 1;
 const ACTION_SCRAPE: u32 = 2;
+
+/// UDP 请求响应超时
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// 默认目标地址（与 BenchConfig 默认 target 一致）
+const DEFAULT_TARGET: &str = "127.0.0.1:6880";
+
+/// BEP 15 announce 请求参数
+///
+/// 字段与协议报文一一对应；用结构体收敛参数，避免函数参数过多。
+struct AnnounceReq<'a> {
+    connection_id: u64,
+    info_hash: &'a [u8; 20],
+    peer_id: &'a [u8; 20],
+    port: u16,
+    tx_id: u32,
+    key: u32,
+}
 
 /// UDP Tracker 压测场景
 pub struct UdpTrackerScenario {
@@ -101,7 +118,7 @@ impl UdpTrackerScenario {
 
         let mut recv_buf = [0u8; 16];
         let (len, _) =
-            tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut recv_buf)).await??;
+            tokio::time::timeout(RESPONSE_TIMEOUT, socket.recv_from(&mut recv_buf)).await??;
         if len < 16 {
             return Err(anyhow::anyhow!("connect 响应太短"));
         }
@@ -112,29 +129,24 @@ impl UdpTrackerScenario {
     async fn udp_announce(
         socket: &UdpSocket,
         target: SocketAddr,
-        connection_id: u64,
-        info_hash: &[u8; 20],
-        peer_id: &[u8; 20],
-        port: u16,
-        tx_id: u32,
-        key: u32,
+        req: &AnnounceReq<'_>,
     ) -> anyhow::Result<()> {
         let mut buf = [0u8; 98];
-        buf[0..8].copy_from_slice(&connection_id.to_be_bytes());
+        buf[0..8].copy_from_slice(&req.connection_id.to_be_bytes());
         buf[8..12].copy_from_slice(&ACTION_ANNOUNCE.to_be_bytes());
-        buf[12..16].copy_from_slice(&tx_id.to_be_bytes());
-        buf[16..36].copy_from_slice(info_hash);
-        buf[36..56].copy_from_slice(peer_id);
+        buf[12..16].copy_from_slice(&req.tx_id.to_be_bytes());
+        buf[16..36].copy_from_slice(req.info_hash);
+        buf[36..56].copy_from_slice(req.peer_id);
         buf[64..72].copy_from_slice(&1000u64.to_be_bytes());
-        buf[88..92].copy_from_slice(&key.to_be_bytes());
+        buf[88..92].copy_from_slice(&req.key.to_be_bytes());
         buf[92..96].copy_from_slice(&(-1i32).to_be_bytes());
-        buf[96..98].copy_from_slice(&port.to_be_bytes());
+        buf[96..98].copy_from_slice(&req.port.to_be_bytes());
 
         socket.send_to(&buf, target).await?;
 
         let mut recv_buf = [0u8; 1024];
         let (len, _) =
-            tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut recv_buf)).await??;
+            tokio::time::timeout(RESPONSE_TIMEOUT, socket.recv_from(&mut recv_buf)).await??;
         if len < 20 {
             return Err(anyhow::anyhow!("announce 响应太短: {}", len));
         }
@@ -165,7 +177,7 @@ impl UdpTrackerScenario {
 
         let mut recv_buf = [0u8; 1024];
         let (len, _) =
-            tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut recv_buf)).await??;
+            tokio::time::timeout(RESPONSE_TIMEOUT, socket.recv_from(&mut recv_buf)).await??;
         if len < 8 {
             return Err(anyhow::anyhow!("scrape 响应太短"));
         }
@@ -193,9 +205,9 @@ impl Scenario for UdpTrackerScenario {
             .get("target")
             .map(|s| {
                 s.parse()
-                    .unwrap_or_else(|_| "127.0.0.1:6880".parse().unwrap())
+                    .unwrap_or_else(|_| DEFAULT_TARGET.parse().unwrap())
             })
-            .unwrap_or_else(|| "127.0.0.1:6880".parse().unwrap());
+            .unwrap_or_else(|| DEFAULT_TARGET.parse().unwrap());
         let _ = self.target.set(target);
 
         // 创建 Arc<UdpSocket> 池
@@ -278,7 +290,19 @@ impl Scenario for UdpTrackerScenario {
             let pid = &self.peer_ids[req_id % self.peer_ids.len()];
             let port = 6881u16 + (req_id % 1000) as u16;
             let key = self.next_key();
-            Self::udp_announce(socket, target, connection_id, ih, pid, port, tx_id, key).await?;
+            Self::udp_announce(
+                socket,
+                target,
+                &AnnounceReq {
+                    connection_id,
+                    info_hash: ih,
+                    peer_id: pid,
+                    port,
+                    tx_id,
+                    key,
+                },
+            )
+            .await?;
         } else {
             let req_id = ctx.next_request_id() as usize;
             let count = (self.next_key() as usize % 5) + 1;
