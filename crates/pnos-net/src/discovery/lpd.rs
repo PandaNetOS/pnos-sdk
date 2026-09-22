@@ -8,7 +8,7 @@
 //! 2. 同时监听多播组，接收其他节点的 announce
 //! 3. 将收到的远端节点通过 discovered_tx 发送给上层
 //!
-//! 消息格式：4 字节魔数 `b"PDCL"` + bincode 序列化的 [`LpdAnnounceMessage`]。
+//! 消息格式：4 字节魔数 `b"PNOS"` + bincode 序列化的 [`LpdAnnounceMessage`]。
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -24,7 +24,7 @@ use tracing::{debug, info, trace, warn};
 use crate::types::{DiscoveredNode, DiscoverySource, NodeId, Reachability};
 
 /// LPD 多播消息魔数（4 字节），用于过滤非本协议的多播流量
-pub const LPD_MAGIC: &[u8; 4] = b"PDCL";
+pub const LPD_MAGIC: &[u8; 4] = b"PNOS";
 
 /// 默认 LPD 多播地址（本地管理组）
 pub const DEFAULT_LPD_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 43, 21);
@@ -406,7 +406,7 @@ mod tests {
             data_entry_count: 42,
         };
         let wire = msg.to_wire().unwrap();
-        assert_eq!(&wire[..4], b"PDCL");
+        assert_eq!(&wire[..4], b"PNOS");
         let decoded = LpdAnnounceMessage::from_wire(&wire).unwrap();
         assert_eq!(decoded, msg);
         let mut bad = wire.clone();

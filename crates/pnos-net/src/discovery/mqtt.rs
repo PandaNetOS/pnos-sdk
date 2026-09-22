@@ -62,8 +62,8 @@ pub struct MqttDiscoveryMessage {
     pub addresses: Vec<String>,
     /// API/HTTP 监控端口
     pub api_port: u16,
-    /// 联邦监听端口
-    pub federation_port: u16,
+    /// 服务监听端口
+    pub service_port: u16,
     /// 能力位掩码（预留）
     pub capabilities: u32,
     /// 发送时间戳（Unix 秒）
@@ -75,7 +75,7 @@ impl MqttDiscoveryMessage {
         node_id: [u8; 20],
         addresses: Vec<SocketAddr>,
         api_port: u16,
-        federation_port: u16,
+        service_port: u16,
     ) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -86,7 +86,7 @@ impl MqttDiscoveryMessage {
             node_id: hex::encode(node_id),
             addresses: addresses.into_iter().map(|a| a.to_string()).collect(),
             api_port,
-            federation_port,
+            service_port,
             capabilities: 0,
             timestamp: now,
         }
@@ -113,8 +113,8 @@ impl MqttDiscoveryMessage {
 pub struct MqttDiscoveryService {
     /// 自己的节点 ID
     my_node_id: [u8; 20],
-    /// 联邦监听端口
-    federation_port: u16,
+    /// 服务监听端口
+    service_port: u16,
     /// API/HTTP 监控端口
     api_port: u16,
     /// 自己的可连接地址（公网映射地址等）
@@ -133,7 +133,7 @@ impl MqttDiscoveryService {
     /// 创建 MQTT 发现服务
     pub fn new(
         my_node_id: [u8; 20],
-        federation_port: u16,
+        service_port: u16,
         api_port: u16,
         my_addresses: Vec<SocketAddr>,
         discovered_tx: broadcast::Sender<DiscoveredNode>,
@@ -150,7 +150,7 @@ impl MqttDiscoveryService {
 
         Self {
             my_node_id,
-            federation_port,
+            service_port,
             api_port,
             my_addresses,
             heartbeat_secs: DEFAULT_MQTT_HEARTBEAT_SECS,
@@ -163,6 +163,22 @@ impl MqttDiscoveryService {
     /// 覆盖心跳间隔
     pub fn with_heartbeat(mut self, secs: u64) -> Self {
         self.heartbeat_secs = secs;
+        self
+    }
+
+    /// 按外部 DNS 配置重建解析池
+    ///
+    /// 不调用时使用 [`crate::dns::DnsConfig::default`]，即内置公共 DNS、
+    /// 不读系统 DNS 配置。`allow_system_fallback=false` 时，解析失败会直接
+    /// 放弃该 target（而不是把域名丢给 rumqttc 走系统 DNS）。
+    pub fn with_dns_config(mut self, cfg: &crate::dns::DnsConfig) -> Self {
+        match crate::dns::DnsPool::from_config(cfg) {
+            Ok(pool) => self.dns_pool = Some(Arc::new(pool)),
+            Err(e) => {
+                warn!("[net-mqtt] DNS 池初始化失败，使用系统 DNS: {}", e);
+                self.dns_pool = None;
+            }
+        }
         self
     }
 
@@ -220,12 +236,21 @@ impl MqttDiscoveryService {
                     debug!("[net-mqtt] DNS 解析 {} -> {}（使用 DnsPool）", host, ip);
                     ip
                 }
-                Err(e) => {
+                Err(e) if dns.allow_system_fallback() => {
                     debug!(
                         "[net-mqtt] DnsPool 解析 {} 失败（{}），回退系统 DNS",
                         host, e
                     );
                     host.to_string()
+                }
+                Err(e) => {
+                    // 未启用系统回退：宁可显式失败，也不要悄悄把域名交给
+                    // 系统解析器（宿主 DNS 不可用时会把整条发现链拖死）
+                    anyhow::bail!(
+                        "[net-mqtt] DnsPool 解析 {} 失败且未启用系统 DNS 回退: {}",
+                        host,
+                        e
+                    );
                 }
                 Ok(_) => host.to_string(),
             }
@@ -252,7 +277,7 @@ impl MqttDiscoveryService {
             self.my_node_id,
             self.my_addresses.clone(),
             self.api_port,
-            self.federation_port,
+            self.service_port,
         );
         let payload = msg.to_json()?;
         client
@@ -292,7 +317,7 @@ impl MqttDiscoveryService {
                         self.my_node_id,
                         self.my_addresses.clone(),
                         self.api_port,
-                        self.federation_port,
+                        self.service_port,
                     );
                     if let Ok(payload) = msg.to_json() {
                         if let Err(e) = client.publish(MQTT_DISCOVERY_TOPIC, QoS::AtMostOnce, true, payload).await {

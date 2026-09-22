@@ -382,32 +382,68 @@ pub fn detect_nat_type(
 }
 
 /// 从多个 STUN 服务器中选择两个不同的服务器进行 NAT 类型检测
+///
+/// # 调用约定：必须传入已解析的 `ip:port` 字面量
+///
+/// 底层 [`stun_binding_request`] 对非字面量会走 `to_socket_addrs()`（即**系统
+/// DNS**）。调用方应先经 `pnos_net::dns::DnsPool::resolve_endpoints` 预解析，
+/// 在宿主解析器不可用时才能保证 STUN 探测不落回系统解析器。
+///
+/// # 服务器不足两个时的行为
+///
+/// **不再回退到内置的 Google STUN 主机名**（历史行为）：那既引入了硬编码的
+/// 第三方端点，又会在宿主 DNS 不可用时重新踩回系统解析器 —— 正是本模块要
+/// 摆脱的失败模式。
+///
+/// - 0 个服务器 → [`NatType::Unknown`]
+/// - 1 个服务器 → 只能区分「公网直连」与「无法判定」，即
+///   [`NatType::OpenInternet`] 或 [`NatType::Unknown`]
+/// - ≥2 个服务器 → 走双服务器对比（见 [`detect_nat_type`]）
 pub fn detect_nat_type_multi(servers: &[String], local_addr: &str, timeout: Duration) -> NatType {
-    if servers.len() < 2 {
-        // 只有一个服务器时，使用默认的第二个服务器
-        let default_servers = [
-            "stun.l.google.com:19302".to_string(),
-            "stun1.l.google.com:19302".to_string(),
-        ];
-        let server_a = servers
-            .first()
-            .cloned()
-            .unwrap_or_else(|| default_servers[0].clone());
-        let server_b = default_servers[1].clone();
-        return detect_nat_type(&server_a, &server_b, local_addr, timeout);
-    }
+    match servers.len() {
+        0 => {
+            debug!("[stun] 无可用 STUN 服务器，NAT 类型判定跳过");
+            NatType::Unknown
+        }
+        1 => {
+            let server = &servers[0];
+            match stun_binding_request(server, local_addr, timeout) {
+                Ok(result) if result.success => match result.mapped_addr {
+                    Some(mapped)
+                        if mapped.ip() == result.local_addr.ip()
+                            && mapped.port() == result.local_addr.port() =>
+                    {
+                        debug!("[stun] NAT 类型: Open Internet（公网直连）");
+                        NatType::OpenInternet
+                    }
+                    _ => {
+                        debug!(
+                            "[stun] 仅 1 个 STUN 服务器（{}），无法区分锥型/对称，标记 Unknown",
+                            server
+                        );
+                        NatType::Unknown
+                    }
+                },
+                _ => {
+                    debug!("[stun] 服务器 {} 检测失败", server);
+                    NatType::Unknown
+                }
+            }
+        }
+        _ => {
+            // 选择前两个不同的服务器
+            let server_a = &servers[0];
+            let mut server_b = &servers[1];
+            for s in servers.iter().skip(1) {
+                if s != server_a {
+                    server_b = s;
+                    break;
+                }
+            }
 
-    // 选择前两个不同的服务器
-    let server_a = &servers[0];
-    let mut server_b = &servers[1];
-    for s in servers.iter().skip(1) {
-        if s != server_a {
-            server_b = s;
-            break;
+            detect_nat_type(server_a, server_b, local_addr, timeout)
         }
     }
-
-    detect_nat_type(server_a, server_b, local_addr, timeout)
 }
 
 /// 检测 UDP 端口公网可达性（通过 STUN）
@@ -510,6 +546,23 @@ mod tests {
         // 离线环境下应该返回 Unknown
         let result = detect_nat_type_multi(&servers, "0.0.0.0:0", Duration::from_millis(50));
         let _ = result;
+    }
+
+    /// 服务器不足两个时不得回退到内置的 Google STUN 主机名（历史行为：既硬编码了
+    /// 第三方端点，又会在宿主 DNS 不可用时踩回系统解析器），且不得 panic。
+    #[test]
+    fn test_detect_nat_type_multi_insufficient_servers() {
+        assert_eq!(
+            detect_nat_type_multi(&[], "0.0.0.0:0", Duration::from_millis(50)),
+            NatType::Unknown,
+            "0 个服务器必须是 Unknown，不能悄悄用内置 Google STUN"
+        );
+        let one = vec!["127.0.0.1:1".to_string()];
+        assert_eq!(
+            detect_nat_type_multi(&one, "0.0.0.0:0", Duration::from_millis(50)),
+            NatType::Unknown,
+            "单服务器且探测失败必须是 Unknown"
+        );
     }
 
     #[test]

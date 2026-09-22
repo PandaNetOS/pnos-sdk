@@ -38,6 +38,12 @@ pub struct IrohTransportConfig {
     pub connect_timeout: Duration,
     /// ALPN 协议标识
     pub alpn: Vec<u8>,
+    /// DNS 解析配置
+    ///
+    /// 默认使用 pnos-net 内置的 5 个公共 DNS，**不读宿主系统 DNS 配置**。
+    /// 注入后会覆盖 N0 preset 的全部四条解析路径（pkarr 发布/解析、
+    /// DnsAddressLookup TXT 查询、DERP 中继主机名）。
+    pub dns: crate::dns::DnsConfig,
 }
 
 impl Default for IrohTransportConfig {
@@ -50,6 +56,7 @@ impl Default for IrohTransportConfig {
             derp_urls: vec![],
             connect_timeout: Duration::from_secs(10),
             alpn: b"pnos/federation/1".to_vec(),
+            dns: crate::dns::DnsConfig::default(),
         }
     }
 }
@@ -69,10 +76,14 @@ pub struct IrohIdentity {
 
 impl IrohIdentity {
     /// 从 pnos NodeId 派生 Iroh 身份
+    ///
+    /// `dns` 决定 iroh 端点的 DNS 解析器：默认只走 pnos-net 内置公共 DNS，
+    /// 不读宿主系统 DNS 配置（系统 DNS 整台不可用时会导致端点发现全线瘫痪）。
     pub async fn from_pnos_node_id(
         node_id: [u8; 20],
         data_dir: &std::path::Path,
         alpn: &[u8],
+        dns: &crate::dns::DnsConfig,
     ) -> anyhow::Result<Self> {
         // 尝试从磁盘加载已有的密钥对
         let key_path = data_dir.join("iroh_identity");
@@ -94,10 +105,28 @@ impl IrohIdentity {
 
         let iroh_node_id = secret_key.public();
 
+        // DNS 解析器：一处注入覆盖 N0 preset 的四条解析路径
+        //   ① pkarr 发布（HTTPS → dns.iroh.link）
+        //   ② pkarr 解析（HTTPS → dns.iroh.link）
+        //   ③ DnsAddressLookup（_iroh.<id>.dns.iroh.link 的 TXT 查询）
+        //   ④ DERP 中继主机名
+        // 不注入则 iroh 默认 `DnsResolver::new()` 会读宿主系统 DNS 配置。
+        //
+        // 这里直接从 `DnsConfig` 构造解析器，**不**建 `DnsPool`：本函数是
+        // `async fn`，若在函数体内持有池，池会在异步上下文里析构
+        // （hickory 同步 Resolver 内含 Runtime → 析构即 panic）。
+        let server_list: Vec<String> = dns.parse_servers().iter().map(|a| a.to_string()).collect();
+        info!(
+            "[iroh-transport] DNS 解析器已注入（不读系统 DNS）: servers={:?}, 系统回退={}",
+            server_list, dns.allow_system_fallback
+        );
+        let dns_resolver = dns.to_iroh_resolver();
+
         // 创建 Iroh Endpoint（N0 preset = 标准 QUIC 配置）
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
             .secret_key(secret_key)
             .alpns(vec![alpn.to_vec()])
+            .dns_resolver(dns_resolver)
             .bind()
             .await
             .map_err(|e| anyhow::anyhow!("Iroh Endpoint 绑定失败: {}", e))?;
@@ -224,6 +253,7 @@ impl Transport for IrohTransport {
             self.config.node_id,
             &self.config.data_dir,
             &self.config.alpn,
+            &self.config.dns,
         )
         .await?;
         info!(
