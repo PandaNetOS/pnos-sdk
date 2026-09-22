@@ -77,6 +77,12 @@ impl SessionManager {
                         Ok(()) => {
                             s.touch_send();
                             self.hb.mark_probe(s.id);
+                            info!(
+                                "[session] {} 保活探测已发出 (idle_ms={}, since_send_ms={})",
+                                s.id,
+                                s.idle_ms(),
+                                s.since_send_ms()
+                            );
                         }
                         Err(e) => {
                             warn!("[session] {} 保活探测失败，断开: {}", s.id, e);
@@ -155,9 +161,14 @@ impl SessionManager {
         if let Some(sent_ms) = self.hb.take_probe(session.id) {
             let rtt = now_ms().saturating_sub(sent_ms);
             session.set_rtt_ms(rtt.min(u32::MAX as u64) as u32);
+            info!("[session] {} 收到保活应答 (rtt={}ms)", session.id, rtt);
         }
 
         if is_probe {
+            info!(
+                "[session] {} 收到对端保活探测 (kind={})，准备回 Pong",
+                session.id, frame.kind
+            );
             if let Some(reply_kind) = self.cfg.heartbeat_reply_kind {
                 if reply_kind != frame.kind {
                     if let Err(e) = session
