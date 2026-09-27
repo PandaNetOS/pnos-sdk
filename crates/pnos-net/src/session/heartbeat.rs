@@ -1,4 +1,4 @@
-//! 保活与维护
+﻿//! 保活与维护
 //!
 //! 本模块实现 [`SessionManager::tick`]——**幂等、不含内部 sleep**，
 //! 由调用方的调度器周期驱动。
@@ -44,9 +44,10 @@ impl HeartbeatTracker {
 }
 
 impl SessionManager {
-    /// 一轮维护（幂等、无内部 sleep）
+    /// 一轮心跳维护（仅保活探测 + 空闲回收，不含补链）
     ///
-    /// **必须由调用方的调度器驱动**，本层不自行 `spawn` 定时循环。
+    /// **必须由调用方的调度器驱动**，本层不自行 spawn 定时循环。
+    /// 轻量任务：只操作已连接的会话，不发起新连接。
     pub async fn tick(self: &Arc<Self>) {
         if self.is_shutting_down() {
             return;
@@ -77,7 +78,7 @@ impl SessionManager {
                         Ok(()) => {
                             s.touch_send();
                             self.hb.mark_probe(s.id);
-                            info!(
+                            debug!(
                                 "[session] {} 保活探测已发出 (idle_ms={}, since_send_ms={})",
                                 s.id,
                                 s.idle_ms(),
@@ -93,23 +94,28 @@ impl SessionManager {
                 }
             }
         }
-
-        // 3. 候选补齐
-        self.replenish().await;
     }
 
-    /// 按策略补齐会话数
+    /// 按策略补齐会话数（补链任务，可单独调度）
     ///
-    /// 去重完全交给 [`SessionManager::connect`]（`node_id` 级 + 地址级），
-    /// 因此即便候选池里有已连接的节点，也不会产生重复握手。
-    async fn replenish(self: &Arc<Self>) {
+    /// 与 tick() 分离：本函数会发起新连接，耗时较长（TCP 握手/超时）。
+    /// **并行连接**：同时 spawn 多个连接任务，不串行等待。
+    /// 每轮最多补 max_per_tick 个连接，避免一次连太多。
+    pub async fn replenish(self: &Arc<Self>, max_per_tick: usize) {
+        if self.is_shutting_down() {
+            return;
+        }
+
         let target = self.policy.target_sessions().min(self.cfg.max_sessions);
         if target == 0 {
             return;
         }
-        if self.registry.len() >= target {
+        let current = self.registry.len();
+        if current >= target {
             return;
         }
+
+        let need = (target - current).min(max_per_tick);
 
         let mut scored: Vec<(i64, crate::session::PeerCandidate)> = self
             .policy
@@ -118,7 +124,6 @@ impl SessionManager {
             .filter(|c| !c.addrs.is_empty())
             .filter(|c| !self.registry.contains_peer(&c.peer_id))
             .map(|c| {
-                // 交给策略的是只读快照，策略本身不持有连接状态
                 let live = self.registry.get_by_peer(&c.peer_id).map(|s| s.info());
                 let sc = self.policy.score(&c, live.as_ref());
                 (sc, c)
@@ -131,14 +136,33 @@ impl SessionManager {
                 .then_with(|| a.1.peer_id.0.cmp(&b.1.peer_id.0))
         });
 
-        for (sc, c) in scored {
-            if self.registry.len() >= target || self.is_shutting_down() {
-                break;
-            }
-            match self.connect(c.peer_id, &c.addrs, c.reachability).await {
-                Ok(_) => debug!("[session] 候选 {} 已就位（score={}）", c.peer_id, sc),
-                Err(e) => debug!("[session] 候选 {} 拨号失败: {}", c.peer_id, e),
-            }
+        // 取前 need 个候选，并行连接
+        let to_connect: Vec<_> = scored.into_iter().take(need).collect();
+
+        if to_connect.is_empty() {
+            return;
+        }
+
+        debug!(
+            "[session] 补链：准备并行连接 {} 个候选节点（当前 {} / 目标 {}）",
+            to_connect.len(),
+            current,
+            target
+        );
+
+        // 并行 spawn 所有连接任务（fire-and-forget：不等它们完成）
+        // 补链是后台任务，连接结果由 SessionManager 内部管理
+        for (sc, c) in to_connect {
+            let mgr = self.clone();
+            let peer_id = c.peer_id;
+            let addrs = c.addrs;
+            let reach = c.reachability;
+            tokio::spawn(async move {
+                match mgr.connect(peer_id, &addrs, reach).await {
+                    Ok(_) => debug!("[session] 候选 {} 已就位（score={}）", peer_id, sc),
+                    Err(e) => debug!("[session] 候选 {} 拨号失败: {}", peer_id, e),
+                }
+            });
         }
     }
 

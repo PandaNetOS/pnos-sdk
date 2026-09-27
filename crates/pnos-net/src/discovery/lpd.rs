@@ -31,6 +31,8 @@ pub const DEFAULT_LPD_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 43, 21)
 
 /// 默认广播间隔（秒）
 pub const DEFAULT_LPD_BROADCAST_INTERVAL_SECS: u64 = 5;
+/// 默认网口检测间隔（秒）：检测出站 IPv4 是否切换，热更新多播接口
+pub const DEFAULT_LPD_IFACE_CHECK_INTERVAL_SECS: u64 = 60;
 
 /// 同一 `(节点 ID, 源地址)` 的重复 announce 抑制窗口（秒）
 ///
@@ -90,6 +92,8 @@ pub struct LpdDiscoveryService {
     multicast_port: u16,
     /// 广播间隔（秒）
     broadcast_interval_secs: u64,
+    /// 网口检测间隔（秒）：检测出站 IPv4 是否切换，热更新多播接口
+    iface_check_interval_secs: u64,
     /// 发现事件发送端
     discovered_tx: broadcast::Sender<DiscoveredNode>,
     /// 关闭信号
@@ -117,6 +121,7 @@ impl LpdDiscoveryService {
             multicast_addr: DEFAULT_LPD_MULTICAST_ADDR,
             multicast_port,
             broadcast_interval_secs: DEFAULT_LPD_BROADCAST_INTERVAL_SECS,
+            iface_check_interval_secs: DEFAULT_LPD_IFACE_CHECK_INTERVAL_SECS,
             discovered_tx,
             shutdown,
             recent_announces: Mutex::new(HashMap::new()),
@@ -132,6 +137,12 @@ impl LpdDiscoveryService {
     /// 覆盖默认广播间隔（秒）
     pub fn with_broadcast_interval(mut self, secs: u64) -> Self {
         self.broadcast_interval_secs = secs;
+        self
+    }
+
+    /// 覆盖默认网口检测间隔（秒）
+    pub fn with_iface_check_interval(mut self, secs: u64) -> Self {
+        self.iface_check_interval_secs = secs.max(1);
         self
     }
 
@@ -164,13 +175,20 @@ impl LpdDiscoveryService {
                     return;
                 }
             };
-            let socket = Arc::new(match UdpSocket::from_std(std_socket) {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("[net-lpd] 转换 tokio UDP socket 失败，LPD 未启动: {}", e);
-                    return;
-                }
-            });
+            // 把 std socket 包成 Arc，保留引用用于定期更新多播出站接口（多网卡热切换）
+            let raw_socket: Arc<std::net::UdpSocket> = Arc::new(std_socket);
+            let socket = Arc::new(
+                match UdpSocket::from_std((*raw_socket).try_clone().unwrap()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("[net-lpd] 转换 tokio UDP socket 失败，LPD 未启动: {}", e);
+                        return;
+                    }
+                },
+            );
+            // 记录当前多播出站接口，用于定期检测网口切换
+            let current_iface: std::sync::Mutex<Option<Ipv4Addr>> =
+                std::sync::Mutex::new(detect_default_outbound_ipv4());
 
             // 2. 加入多播组
             if let Err(e) = socket.join_multicast_v4(self.multicast_addr, Ipv4Addr::UNSPECIFIED) {
@@ -201,6 +219,10 @@ impl LpdDiscoveryService {
 
             let mut ticker =
                 tokio::time::interval(Duration::from_secs(self.broadcast_interval_secs));
+            // [ALLOWED-INTERVAL] LPD 网口检测 ticker，与广播 ticker 同属一个 select! 事件循环，
+            // 不是独立自跑任务；库内网络服务无法注册到 Agent 的 TaskScheduler。
+            let mut iface_ticker =
+                tokio::time::interval(Duration::from_secs(self.iface_check_interval_secs));
             let mut buf = vec![0u8; 2048];
 
             // 4. 主循环
@@ -209,6 +231,31 @@ impl LpdDiscoveryService {
                     _ = ticker.tick() => {
                         if let Err(e) = self.broadcast_once(&socket, &dst).await {
                             debug!("[net-lpd] 广播失败: {}", e);
+                        }
+                    }
+                    _ = iface_ticker.tick() => {
+                        // 定期检测出站接口，网口切换后自动更新多播出站接口
+                        let detected = detect_default_outbound_ipv4();
+                        let changed = {
+                            let mut cur = current_iface.lock().unwrap();
+                            if detected != *cur {
+                                *cur = detected;
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if changed {
+                            match detected {
+                                Some(ip) => {
+                                    let sock_ref = socket2::SockRef::from(&*raw_socket);
+                                    match sock_ref.set_multicast_if_v4(&ip) {
+                                        Ok(_) => info!("[net-lpd] 多播出站接口已更新为 {}", ip),
+                                        Err(e) => warn!("[net-lpd] 更新多播出站接口失败: {}", e),
+                                    }
+                                }
+                                None => debug!("[net-lpd] 未检测到出站 IPv4 接口"),
+                            }
                         }
                     }
                     recv_result = socket.recv_from(&mut buf) => {
