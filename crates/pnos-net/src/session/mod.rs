@@ -304,13 +304,34 @@ impl SessionManager {
             anyhow::bail!("候选地址均在冷却期: {:?}", addrs);
         }
 
-        // ⑤ 拨号（直连 → 打洞 → 中继由 Dialer 实现负责）
-        let stream = match self.dialer.dial(peer, &usable, reachability).await {
+        // ⑤ 三级选路拨号（本机回环 > 局域网 > 公网）
+        //
+        // 首选路径优先拨号；首选失败再尝试被过滤的兜底地址（如局域网失败回退公网）。
+        let preferred = crate::types::select_preferred_addrs(&usable);
+        let fallback: Vec<SocketAddr> = crate::types::fallback_addrs(&usable)
+            .into_iter()
+            .filter(|a| !self.in_cooldown(a))
+            .collect();
+
+        let stream = match self.dialer.dial(peer, &preferred, reachability).await {
             Ok(s) => s,
             Err(e) => {
-                // 失败才写冷却——成功路径不写，避免把"已在用"的地址误标
-                self.mark_cooldown_all(&usable);
-                return Err(e);
+                // 首选失败：标记首选冷却，尝试兜底地址
+                self.mark_cooldown_all(&preferred);
+                if fallback.is_empty() {
+                    return Err(e);
+                }
+                debug!(
+                    "[session] 对端 {} 首选路径 {:?} 失败（{}），尝试兜底 {:?}",
+                    peer, preferred, e, fallback
+                );
+                match self.dialer.dial(peer, &fallback, reachability).await {
+                    Ok(s) => s,
+                    Err(e2) => {
+                        self.mark_cooldown_all(&fallback);
+                        return Err(e2);
+                    }
+                }
             }
         };
 

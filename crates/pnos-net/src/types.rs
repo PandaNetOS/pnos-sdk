@@ -172,15 +172,27 @@ impl NodeEndpoint {
                     EndpointKind::Public
                 }
             }
-            IpAddr::V6(_) => EndpointKind::Ipv6,
+            IpAddr::V6(ip) => {
+                if ip.is_loopback() {
+                    EndpointKind::Loopback
+                } else if ip.is_unicast_link_local() || (ip.segments()[0] & 0xffc0) == 0xfc00 {
+                    // fe80::/10 链路本地 / fc00::/7 ULA 视为局域网
+                    EndpointKind::Lan
+                } else {
+                    EndpointKind::Ipv6
+                }
+            }
         }
     }
 
     /// 优先级排序用：数值越小优先级越高
+    ///
+    /// 优先级顺序（2026-09-27 调整）：本机回环 > 局域网 > 公网 IPv4 > 公网 IPv6。
+    /// 原先 Lan=0 / Loopback=1 与"本机直连第一优先"的诉求相反，已对调。
     pub fn priority_weight(&self) -> u8 {
         match self.kind {
-            EndpointKind::Lan => 0,
-            EndpointKind::Loopback => 1,
+            EndpointKind::Loopback => 0,
+            EndpointKind::Lan => 1,
             EndpointKind::Public => 2,
             EndpointKind::Ipv6 => 3,
         }
@@ -266,5 +278,65 @@ impl fmt::Display for DiscoverySource {
             DiscoverySource::Pex => write!(f, "PEX"),
             DiscoverySource::Mqtt => write!(f, "MQTT"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 统一三级选路（2026-09-27）
+// ---------------------------------------------------------------------------
+
+/// 按地址类型对候选地址分组。
+///
+/// 返回 `(loopback, lan, public)`，其中 public 含公网 IPv4 与公网 IPv6。
+pub fn group_endpoints(
+    addrs: &[SocketAddr],
+) -> (Vec<SocketAddr>, Vec<SocketAddr>, Vec<SocketAddr>) {
+    let mut loopback = Vec::new();
+    let mut lan = Vec::new();
+    let mut public = Vec::new();
+    for a in addrs {
+        match NodeEndpoint::classify(a) {
+            EndpointKind::Loopback => loopback.push(*a),
+            EndpointKind::Lan => lan.push(*a),
+            EndpointKind::Public | EndpointKind::Ipv6 => public.push(*a),
+        }
+    }
+    (loopback, lan, public)
+}
+
+/// 三级选路：返回**首选**地址列表。
+///
+/// 优先级：本机回环 > 局域网 > 公网。
+/// - 有回环：只退回环；
+/// - 有局域网：只退局域网（公网全部过滤，避免同局域网节点经路由器 NAT 回环）；
+/// - 仅有公网：退回公网。
+///
+/// 配套的 [`fallback_addrs`] 给出被过滤掉的兜底地址，首选路径拨号失败时再尝试。
+pub fn select_preferred_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
+    let (loopback, lan, _public) = group_endpoints(addrs);
+    if !loopback.is_empty() {
+        loopback
+    } else if !lan.is_empty() {
+        lan
+    } else {
+        addrs.to_vec()
+    }
+}
+
+/// 三级选路的兜底地址：首选路径（回环/局域网）拨号失败时再尝试的地址。
+///
+/// - 首选回环：兜底为局域网 + 公网；
+/// - 首选局域网：兜底为公网；
+/// - 首选即公网：返回空。
+pub fn fallback_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
+    let (loopback, lan, public) = group_endpoints(addrs);
+    if !loopback.is_empty() {
+        let mut v = lan;
+        v.extend(public);
+        v
+    } else if !lan.is_empty() {
+        public
+    } else {
+        Vec::new()
     }
 }

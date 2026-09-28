@@ -127,6 +127,15 @@ impl IrohIdentity {
             .secret_key(secret_key)
             .alpns(vec![alpn.to_vec()])
             .dns_resolver(dns_resolver)
+            // 三级选路配套（2026-09-27）：只发布、不主动解析。
+            //
+            // N0 preset 默认带 PkarrPublisher + PkarrResolver + DnsAddressLookup。
+            // 后两者会在每次拨号时（selected_path 尚未建立）异步解析对端公网地址并
+            // 加入 multipath，导致同局域网节点经路由器 NAT 回环。这里清空后只加回
+            // PkarrPublisher：公网节点仍能通过 pkarr 发现本机并连入，而本机拨号地址
+            // 完全由 pnos 发现层（LPD/MQTT/DHT/seed）决定，不额外解析公网。
+            .clear_address_lookup()
+            .address_lookup(iroh::address_lookup::PkarrPublisher::n0_dns())
             .bind()
             .await
             .map_err(|e| anyhow::anyhow!("Iroh Endpoint 绑定失败: {}", e))?;
@@ -242,6 +251,23 @@ impl IrohTransport {
     }
 }
 
+/// 判断 IP 是否为私网/局域网地址（RFC1918 + loopback + link-local + IPv6 ULA）
+fn is_private_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_private()          // 10/8, 172.16/12, 192.168/16
+                || v4.is_loopback()   // 127/8
+                || v4.is_link_local() // 169.254/16
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()                 // ::1
+                || v6.is_unicast_link_local() // fe80::/10
+                || v6.segments()[0] & 0xffc0 == 0xfc00 // fc00::/7 ULA
+        }
+    }
+}
+
 #[async_trait]
 impl Transport for IrohTransport {
     fn kind(&self) -> TransportKind {
@@ -285,8 +311,26 @@ impl Transport for IrohTransport {
         let iroh_node_id = IrohIdentity::pnos_to_iroh_node_id(&node_id)?;
 
         // 2. 构建 EndpointAddr：PublicKey + 已知 IP 地址
+        // 局域网优先策略：如果地址列表中包含私网地址，只使用私网地址，
+        // 避免 iroh QUIC multipath 同时尝试公网路径导致 NAT 回环和重复连接。
+        let has_private = addrs.iter().any(|a| is_private_ip(a.ip()));
+        let filtered: Vec<SocketAddr> = if has_private {
+            let private_addrs: Vec<_> = addrs
+                .iter()
+                .copied()
+                .filter(|a| is_private_ip(a.ip()))
+                .collect();
+            info!(
+                "[iroh-transport] 局域网优先：检测到私网地址，过滤公网路径. 全部地址={:?}, 仅保留局域网={:?}",
+                addrs, private_addrs
+            );
+            private_addrs
+        } else {
+            addrs.to_vec()
+        };
+
         let mut endpoint_addr = iroh::EndpointAddr::new(iroh_node_id);
-        for addr in addrs {
+        for addr in &filtered {
             endpoint_addr = endpoint_addr.with_ip_addr(*addr);
         }
 
@@ -315,7 +359,7 @@ impl Transport for IrohTransport {
 
         Ok(TransportConnectResult {
             stream: Box::new(IrohStream { recv, send, kind }),
-            connected_addr: addrs.first().copied(),
+            connected_addr: filtered.first().copied(),
             latency,
             kind,
         })

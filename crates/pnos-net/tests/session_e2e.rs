@@ -35,6 +35,8 @@ const TEST_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const SETTLE_DUPLICATE_REJECT: Duration = Duration::from_millis(150);
 /// 轮询等待对端清理掉线会话的间隔
 const POLL_PEER_CLEANUP: Duration = Duration::from_millis(25);
+/// replenish 后台拨号落地等待时间
+const REPLENISH_SETTLE: Duration = Duration::from_millis(100);
 /// 双向拨号仲裁收敛的静默期
 const SETTLE_BIDIRECTIONAL: Duration = Duration::from_millis(250);
 /// 极短空闲超时（空闲回收用例）
@@ -414,9 +416,10 @@ async fn test_e2e_tick_replenishes_without_duplicating() {
     let b = spawn_dialer(b_id, dial_cfg(), policy).await;
     assert_eq!(b.stats().active, 0);
 
-    // 一轮 tick 应补齐到 1 条
-    b.tick().await;
-    assert_eq!(b.stats().active, 1, "tick 应补齐会话");
+    // 一轮 replenish 应补齐到 1 条（replenish 内部 spawn 后台连接，等待事件落地）
+    b.replenish(1).await;
+    tokio::time::sleep(REPLENISH_SETTLE).await;
+    assert_eq!(b.stats().active, 1, "replenish 应补齐会话");
     assert_eq!(b.stats().established, 1);
 
     // 再 tick 两轮：不得重复建连（候选已被 node_id 级去重排除）

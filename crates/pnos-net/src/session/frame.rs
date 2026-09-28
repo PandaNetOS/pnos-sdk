@@ -34,7 +34,12 @@ pub const FRAME_HEADER_SIZE: usize = 5;
 pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 
 /// 接收缓冲上限：对端持续发送无法组帧的数据即断开，避免内存无界增长
-const MAX_READ_BUF: usize = 2 * 1024 * 1024;
+///
+/// **不变量：必须 ≥ [`MAX_FRAME_SIZE`]**。接收单个合法大帧（最长 16 MiB）时，
+/// 在组帧完成前缓冲会增长到接近整帧大小；若此上限小于 `MAX_FRAME_SIZE`，
+/// 任何介于二者之间的合法帧都会被误判为「缓冲超限」而断开连接。
+/// 取 `MAX_FRAME_SIZE + 1 MiB` 余量，容纳帧头与已排队的后续字节。
+const MAX_READ_BUF: usize = MAX_FRAME_SIZE + 1024 * 1024;
 
 /// 默认写入超时
 const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
