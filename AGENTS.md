@@ -55,7 +55,7 @@ pnos-sdk/
 
 1. pnos-sdk 是 workspace，新增子 crate 需在 Cargo.toml 的 members 中注册
 2. 所有子 crate 统一依赖 pnos-spec，不允许直接依赖旧 pandanetos
-3. pnos-net 当前有 18 个 warnings（预存问题），修改时注意不要引入新 warning
+3. pnos-net 当前有 20 个 warnings（预存问题），修改时注意不要引入新 warning
 
 ## 变更历史
 
