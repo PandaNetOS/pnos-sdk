@@ -48,10 +48,6 @@ const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const HIGH_PRIORITY_SPIN_MAX_ATTEMPTS: u32 = 20;
 /// 高优先级发送的自旋等待间隔
 const HIGH_PRIORITY_SPIN_INTERVAL: Duration = Duration::from_millis(1);
-/// 写入超时后的默认最大重试次数（不含首次）
-const DEFAULT_WRITE_MAX_RETRIES: u32 = 3;
-/// 写入重试退避基数（毫秒）
-const DEFAULT_WRITE_RETRY_BASE_MS: u64 = 100;
 
 /// 一帧数据
 ///
@@ -177,8 +173,6 @@ pub struct FrameTransport {
     /// 字节级统计（可选，由会话注册表注入）
     stats: Option<SessionStats>,
     write_timeout: Duration,
-    max_retries: u32,
-    retry_base_ms: u64,
 }
 
 impl FrameTransport {
@@ -197,8 +191,6 @@ impl FrameTransport {
             local,
             stats: None,
             write_timeout: DEFAULT_WRITE_TIMEOUT,
-            max_retries: DEFAULT_WRITE_MAX_RETRIES,
-            retry_base_ms: DEFAULT_WRITE_RETRY_BASE_MS,
         }
     }
 
@@ -213,48 +205,38 @@ impl FrameTransport {
         self
     }
 
-    pub fn with_retry_config(mut self, max_retries: u32, retry_base_ms: u64) -> Self {
-        self.max_retries = max_retries;
-        self.retry_base_ms = retry_base_ms;
-        self
-    }
-
-    /// 带重试的帧写入（持写锁）
+    /// 帧写入（持写锁；超时=致命）
     ///
-    /// 单次 `write_all` 受 `write_timeout` 限制；超时后按指数退避重试最多
-    /// `max_retries` 次。非超时的硬 IO 错误（如连接重置）不重试，立即上抛。
+    /// 单次 `write_all` 受 `write_timeout` 限制。
+    ///
+    /// Q批(Q-fix)：**超时后禁止内联重试**。旧实现在超时后按指数退避整帧重写——
+    /// 但 `write_all` 超时返回时，前面的字节可能已写入流（部分写），整帧重写会使
+    /// 字节流**帧边界永久错位**：对端读循环从此解析出畸形长度、卡死在读一个虚构
+    /// 超长帧上 → TCP 接收窗口归零 → 本端后续所有写全部超时（.52/.53 2026-10-07
+    /// 实证：bootstrap 大帧重试损坏链路后，小帧/delta 挤行、NAK 风暴数小时）。
+    /// 写超时 = 连接帧状态未知 = 唯一安全动作是上抛致命错误、由会话层断链重建。
+    /// 错误保持原始 `io::Error`（TimedOut）类型透传，供会话层识别后拆除会话。
     async fn write_frame_with_retry(
         &self,
         writer: &mut WriteHalf<Box<dyn TransportStream>>,
         frame: &[u8],
     ) -> anyhow::Result<()> {
-        let mut attempt: u32 = 0;
-        loop {
-            match tokio::time::timeout(self.write_timeout, writer.write_all(frame)).await {
-                Ok(Ok(())) => {
-                    let _ = writer.flush().await;
-                    return Ok(());
-                }
-                Ok(Err(e)) => return Err(anyhow::anyhow!("写入失败: {}", e)),
-                Err(_elapsed) => {
-                    if attempt >= self.max_retries {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            format!("write timeout（重试 {} 次后仍超时）", self.max_retries),
-                        )
-                        .into());
-                    }
-                    // 指数退避：base * 2^attempt（移位次数做钳制，避免溢出）
-                    let backoff_ms = self.retry_base_ms.saturating_mul(1u64 << attempt.min(20));
-                    tracing::debug!(
-                        "[session] write 超时，第 {}/{} 次重试（等待 {}ms）",
-                        attempt + 1,
-                        self.max_retries,
-                        backoff_ms
-                    );
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    attempt += 1;
-                }
+        match tokio::time::timeout(self.write_timeout, writer.write_all(frame)).await {
+            Ok(Ok(())) => {
+                let _ = writer.flush().await;
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e.into()),
+            Err(_elapsed) => {
+                // 部分写可能已发生：帧状态未知，绝不能原地重试
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "write timeout {}s（连接帧状态未知，必须断链重建）",
+                        self.write_timeout.as_secs()
+                    ),
+                )
+                .into())
             }
         }
     }

@@ -260,10 +260,6 @@ pub struct SessionConfig {
     pub heartbeat_reply_kind: Option<u16>,
     /// 写入超时
     pub write_timeout: Duration,
-    /// 写入超时后的最大重试次数
-    pub write_max_retries: u32,
-    /// 写入重试退避基数（毫秒）
-    pub write_retry_base_ms: u64,
 }
 
 impl Default for SessionConfig {
@@ -277,8 +273,6 @@ impl Default for SessionConfig {
             heartbeat_kind: None,
             heartbeat_reply_kind: None,
             write_timeout: Duration::from_secs(30),
-            write_max_retries: 3,
-            write_retry_base_ms: 100,
         }
     }
 }

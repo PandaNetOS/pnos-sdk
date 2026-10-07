@@ -81,8 +81,7 @@ fn spawn_inbound(mgr: Arc<SessionManager>, stream: TcpStream, addr: SocketAddr) 
                 TransportKind::Tcp,
             )))
             .with_stats(mgr.stats.clone())
-            .with_write_timeout(mgr.cfg.write_timeout)
-            .with_retry_config(mgr.cfg.write_max_retries, mgr.cfg.write_retry_base_ms),
+            .with_write_timeout(mgr.cfg.write_timeout),
         );
 
         let identity = match tokio::time::timeout(

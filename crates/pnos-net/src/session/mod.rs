@@ -338,8 +338,7 @@ impl SessionManager {
         let transport = Arc::new(
             FrameTransport::from_stream(stream)
                 .with_stats(self.stats.clone())
-                .with_write_timeout(self.cfg.write_timeout)
-                .with_retry_config(self.cfg.write_max_retries, self.cfg.write_retry_base_ms),
+                .with_write_timeout(self.cfg.write_timeout),
         );
         let addr = transport.peer_addr().unwrap_or(usable[0]);
 
@@ -475,12 +474,29 @@ impl SessionManager {
     // 收发
     // ------------------------------------------------------------------
 
+    /// Q批(Q-fix)：发送致命错误判定 —— 写入超时/IO 错误意味着**帧状态未知**
+    /// （部分写可能已落地），该会话字节流不可再信任，必须断链由两端重建。
+    /// 编码类错误（帧过大等，未触碰 socket）不算致命。
+    async fn teardown_on_fatal_send_error(self: &Arc<Self>, s: &Arc<Session>, e: &anyhow::Error) {
+        if e.downcast_ref::<std::io::Error>().is_some() {
+            warn!(
+                "[session] {} 发送致命错误（帧状态未知），断链重建: {}",
+                s.id, e
+            );
+            self.disconnect(s.id, DisconnectReason::Io(format!("{e}")))
+                .await;
+        }
+    }
+
     pub async fn send(self: &Arc<Self>, session: SessionId, frame: Frame) -> anyhow::Result<()> {
         let s = self
             .registry
             .get_by_id(session)
             .ok_or_else(|| anyhow::anyhow!("会话不存在: {}", session))?;
-        s.transport.send_frame(frame.kind, &frame.payload).await?;
+        if let Err(e) = s.transport.send_frame(frame.kind, &frame.payload).await {
+            self.teardown_on_fatal_send_error(&s, &e).await;
+            return Err(e);
+        }
         s.touch_send();
         Ok(())
     }
@@ -490,7 +506,10 @@ impl SessionManager {
             .registry
             .get_by_peer(peer)
             .ok_or_else(|| anyhow::anyhow!("对端无活跃会话: {}", peer))?;
-        s.transport.send_frame(frame.kind, &frame.payload).await?;
+        if let Err(e) = s.transport.send_frame(frame.kind, &frame.payload).await {
+            self.teardown_on_fatal_send_error(&s, &e).await;
+            return Err(e);
+        }
         s.touch_send();
         Ok(())
     }
