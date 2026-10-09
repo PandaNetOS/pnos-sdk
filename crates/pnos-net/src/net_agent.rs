@@ -144,7 +144,8 @@ pub struct NetAgent {
 impl NetAgent {
     /// 创建 NetAgent
     pub async fn new(config: NetAgentConfig) -> anyhow::Result<Arc<Self>> {
-        let (event_tx, _) = broadcast::channel(256);
+        // 批次M(#7)：256→1024——慢消费（联邦 dispatch 建连接级 spawn）会导致 Lagged 丢事件
+        let (event_tx, _) = broadcast::channel(1024);
         let (discovered_tx, _) = broadcast::channel(256);
         let (shutdown, _) = broadcast::channel(1);
 

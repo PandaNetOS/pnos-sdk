@@ -159,8 +159,9 @@ pub struct SessionManager {
     pub(crate) registry: SessionRegistry,
     pub(crate) stats: SessionStats,
     pub(crate) events: broadcast::Sender<SessionEvent>,
-    /// 地址冷却表：addr → 冷却到期时间（UNIX ms）
-    pub(crate) cooldown: Mutex<HashMap<SocketAddr, u64>>,
+    /// 地址冷却表：(node_id, addr) → 冷却到期时间（UNIX ms）。
+    /// 粒度按身份区分：同地址的不同身份互不影响（批次M #7，v9 遗留 #3）
+    pub(crate) cooldown: Mutex<HashMap<(NodeId, SocketAddr), u64>>,
     /// 监听器（由 accept loop 取走）
     pub(crate) listener: TokioMutex<Option<TcpListener>>,
     /// 实际监听地址
@@ -298,7 +299,7 @@ impl SessionManager {
         let usable: Vec<SocketAddr> = addrs
             .iter()
             .copied()
-            .filter(|a| !self.in_cooldown(a))
+            .filter(|a| !self.in_cooldown(&peer, a))
             .collect();
         if usable.is_empty() {
             anyhow::bail!("候选地址均在冷却期: {:?}", addrs);
@@ -310,14 +311,14 @@ impl SessionManager {
         let preferred = crate::types::select_preferred_addrs(&usable);
         let fallback: Vec<SocketAddr> = crate::types::fallback_addrs(&usable)
             .into_iter()
-            .filter(|a| !self.in_cooldown(a))
+            .filter(|a| !self.in_cooldown(&peer, a))
             .collect();
 
         let stream = match self.dialer.dial(peer, &preferred, reachability).await {
             Ok(s) => s,
             Err(e) => {
                 // 首选失败：标记首选冷却，尝试兜底地址
-                self.mark_cooldown_all(&preferred);
+                self.mark_cooldown_all(peer, &preferred);
                 if fallback.is_empty() {
                     return Err(e);
                 }
@@ -328,7 +329,7 @@ impl SessionManager {
                 match self.dialer.dial(peer, &fallback, reachability).await {
                     Ok(s) => s,
                     Err(e2) => {
-                        self.mark_cooldown_all(&fallback);
+                        self.mark_cooldown_all(peer, &fallback);
                         return Err(e2);
                     }
                 }
@@ -351,19 +352,19 @@ impl SessionManager {
         {
             Ok(Ok(id)) => id,
             Ok(Err(e)) => {
-                self.mark_cooldown(addr);
+                self.mark_cooldown(peer, addr);
                 let _ = transport.close().await;
                 return Err(anyhow::anyhow!("握手失败: {}", e));
             }
             Err(_) => {
-                self.mark_cooldown(addr);
+                self.mark_cooldown(peer, addr);
                 let _ = transport.close().await;
                 return Err(anyhow::anyhow!("握手超时: {}", peer));
             }
         };
 
         if !identity.verified {
-            self.mark_cooldown(addr);
+            self.mark_cooldown(identity.peer_id, addr);
             let _ = transport.close().await;
             anyhow::bail!("对端身份校验未通过: {}", identity.peer_id);
         }
@@ -606,12 +607,13 @@ impl SessionManager {
     // 冷却
     // ------------------------------------------------------------------
 
-    pub(crate) fn in_cooldown(&self, addr: &SocketAddr) -> bool {
+    pub(crate) fn in_cooldown(&self, peer: &NodeId, addr: &SocketAddr) -> bool {
         let mut g = self.cooldown.lock();
-        match g.get(addr) {
+        let key = (*peer, *addr);
+        match g.get(&key) {
             Some(until) => {
                 if *until <= now_ms() {
-                    g.remove(addr);
+                    g.remove(&key);
                     false
                 } else {
                     true
@@ -621,14 +623,14 @@ impl SessionManager {
         }
     }
 
-    pub(crate) fn mark_cooldown(&self, addr: SocketAddr) {
+    pub(crate) fn mark_cooldown(&self, peer: NodeId, addr: SocketAddr) {
         let until = now_ms() + self.cfg.addr_cooldown.as_millis() as u64;
-        self.cooldown.lock().insert(addr, until);
+        self.cooldown.lock().insert((peer, addr), until);
     }
 
-    pub(crate) fn mark_cooldown_all(&self, addrs: &[SocketAddr]) {
+    pub(crate) fn mark_cooldown_all(&self, peer: NodeId, addrs: &[SocketAddr]) {
         for a in addrs {
-            self.mark_cooldown(*a);
+            self.mark_cooldown(peer, *a);
         }
     }
 
