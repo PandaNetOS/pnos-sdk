@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
@@ -21,6 +22,13 @@ use tracing::{debug, info, warn};
 use crate::session::frame::Frame;
 use crate::session::session::{now_ms, DisconnectReason, Session, SessionId};
 use crate::session::SessionManager;
+
+/// 单条会话保活探测的硬超时。
+///
+/// 取 5s：远大于正常握手/首包 RTT，又远小于「一个坏对端拖死整轮 tick」的量级。
+/// 未设超时时最坏 = `write_timeout`（默认 30s，Q批后不再有内联重试）；
+/// 串行遍历下 N 个停读对端就是 `N × 30s`，整轮 tick 停摆。
+const PROBE_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 保活状态：记录每个会话最近一次探测的发送时间
 #[derive(Default)]
@@ -48,6 +56,21 @@ impl SessionManager {
     ///
     /// **必须由调用方的调度器驱动**，本层不自行 spawn 定时循环。
     /// 轻量任务：只操作已连接的会话，不发起新连接。
+    ///
+    /// # 会话之间必须并行，且每个会话都要有超时
+    ///
+    /// 串行遍历 `registry.all()` 时，只要有一个对端停止读数据（TCP 缓冲填满、
+    /// 对端挂起、网络分区），`send_frame_high_priority` 就会卡在 writer 锁 +
+    /// `write` 上最长 `write_timeout` 秒（Q批后超时即致命错误返回，但一次仍要等满
+    /// 30s）。**后面所有会话的保活与空闲回收全部停摆**——包括那些完全健康的会话。
+    ///
+    /// 因此这里改为：
+    ///
+    /// 1. 探测帧对每个会话单独加 [`PROBE_SEND_TIMEOUT`] 超时兜底；
+    /// 2. 各会话用独立 task 并发执行，坏对端只拖累自己那一条。
+    ///
+    /// 用 `tokio::spawn` 而非 `join_all`：调用方（pdc 的 `fed_heartbeat`）在
+    /// 本 task 之外还有一层超时包裹，本层只需要保证「单条会话不阻塞其他会话」。
     pub async fn tick(self: &Arc<Self>) {
         if self.is_shutting_down() {
             return;
@@ -57,42 +80,67 @@ impl SessionManager {
 
         let idle_limit = self.cfg.idle_timeout.as_millis() as u64;
         let hb_interval = self.cfg.heartbeat_interval.as_millis() as u64;
+        let probe_kind = self.cfg.heartbeat_kind;
 
-        for s in self.registry.all() {
-            // 1. 空闲回收
-            if s.idle_ms() > idle_limit {
-                info!(
-                    "[session] {} 空闲超时（{}ms > {}ms），断开",
-                    s.id,
-                    s.idle_ms(),
-                    idle_limit
-                );
-                self.disconnect(s.id, DisconnectReason::IdleTimeout).await;
-                continue;
-            }
+        // 先取出快照：registry.all() 内部持读锁，不能跨 await。
+        let sessions = self.registry.all();
 
-            // 2. 保活探测
-            if let Some(probe_kind) = self.cfg.heartbeat_kind {
-                if s.since_send_ms() >= hb_interval {
-                    match s.transport.send_frame_high_priority(probe_kind, &[]).await {
-                        Ok(()) => {
-                            s.touch_send();
-                            self.hb.mark_probe(s.id);
-                            debug!(
-                                "[session] {} 保活探测已发出 (idle_ms={}, since_send_ms={})",
-                                s.id,
-                                s.idle_ms(),
-                                s.since_send_ms()
-                            );
-                        }
-                        Err(e) => {
-                            warn!("[session] {} 保活探测失败，断开: {}", s.id, e);
-                            self.disconnect(s.id, DisconnectReason::Io(e.to_string()))
-                                .await;
-                        }
+        for s in sessions {
+            let mgr = Arc::clone(self);
+            tokio::spawn(async move {
+                // 1. 空闲回收
+                if s.idle_ms() > idle_limit {
+                    info!(
+                        "[session] {} 空闲超时（{}ms > {}ms），断开",
+                        s.id,
+                        s.idle_ms(),
+                        idle_limit
+                    );
+                    mgr.disconnect(s.id, DisconnectReason::IdleTimeout).await;
+                    return;
+                }
+
+                // 2. 保活探测
+                let Some(probe_kind) = probe_kind else {
+                    return;
+                };
+                if s.since_send_ms() < hb_interval {
+                    return;
+                }
+                let sent = tokio::time::timeout(
+                    PROBE_SEND_TIMEOUT,
+                    s.transport.send_frame_high_priority(probe_kind, &[]),
+                )
+                .await;
+                match sent {
+                    Ok(Ok(())) => {
+                        s.touch_send();
+                        mgr.hb.mark_probe(s.id);
+                        debug!(
+                            "[session] {} 保活探测已发出 (idle_ms={}, since_send_ms={})",
+                            s.id,
+                            s.idle_ms(),
+                            s.since_send_ms()
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        warn!("[session] {} 保活探测失败，断开: {}", s.id, e);
+                        mgr.disconnect(s.id, DisconnectReason::Io(e.to_string()))
+                            .await;
+                    }
+                    Err(_elapsed) => {
+                        // 超时 = 对端不读（或 writer 锁被长同步消息长期占用）。
+                        // 不再等它，直接摘除这条会话，避免拖垮其他会话的 tick。
+                        warn!(
+                            "[session] {} 保活探测超过 {}ms 未完成，断开（对端可能已停止读取）",
+                            s.id,
+                            PROBE_SEND_TIMEOUT.as_millis()
+                        );
+                        mgr.disconnect(s.id, DisconnectReason::Io("保活探测超时".to_string()))
+                            .await;
                     }
                 }
-            }
+            });
         }
     }
 
